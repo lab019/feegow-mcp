@@ -151,7 +151,11 @@ func (c *Client) Call(ctx context.Context, id EndpointID, req Request) (*Respons
 		return nil, fmt.Errorf("feegow: reading response for %s: %w", id, err)
 	}
 
-	if httpResp.StatusCode != http.StatusOK {
+	wantStatus := http.StatusOK
+	if d.SuccessStatus != 0 {
+		wantStatus = d.SuccessStatus
+	}
+	if httpResp.StatusCode != wantStatus {
 		callErr := classifyError(httpResp.StatusCode, body)
 		// A RouteNotFoundError means THIS SERVICE built a request against a
 		// path/method Feegow doesn't recognize — an integration bug, not a

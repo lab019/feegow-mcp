@@ -9,6 +9,7 @@ package tools
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/lab019/feegow-mcp/internal/feegow"
@@ -180,6 +181,37 @@ const (
 // these two specific conflicts is a real outcome for them — resolveOwnedAgendamento
 // (agendamento_escrita.go) already turns "id not mine" into ErrNaoLocalizado
 // before either tool's underlying Feegow call is ever made.
+// ArgumentIndisponivel builds the *ArgumentError a Fase 4b grouped tool
+// returns for a `tipo`/`acao` value that IS recognized — the caller asked
+// for something real — but whose underlying Feegow endpoint this package
+// deliberately never calls, because internal/feegow/registry.go's Fase 0/4b
+// smoke test could not establish a trustworthy contract for it. Three
+// distinct reasons land here, and reason is always spelled out so an
+// operator reading the error knows which one applies:
+//
+//   - a dead host (core.feegow.com.br doesn't resolve in this environment
+//     — stock.location_list/product_entry/product_movement/product_exit);
+//   - a dead route (financial.dmed and financial.private_table_list both
+//     404 in this environment, per Fase 0);
+//   - a route that responds but whose request-body contract could not be
+//     confirmed by any probe (financial.account_association,
+//     financial.voucher_create — see their Registry Notes).
+//
+// Modeled as *ArgumentError (not a new sentinel type) deliberately: from
+// the caller's point of view this is the same shape of problem as any
+// other rejected argument — "this specific value of tipo/acao is not
+// something this tool can do" — caught and explained BEFORE any Feegow
+// request is built, exactly like every other ArgumentError in this
+// package. A dedicated type would only be useful if a caller needed to
+// distinguish "bad argument" from "known-unavailable argument"
+// programmatically, and nothing in this codebase does.
+func ArgumentIndisponivel(tool, tipoOuAcao, reason string) error {
+	return &ArgumentError{Msg: fmt.Sprintf(
+		"%s: %q não está disponível através desta tool — %s (ver internal/feegow/registry.go para o contrato medido)",
+		tool, tipoOuAcao, reason,
+	)}
+}
+
 func classifyAppointConflict(err error) error {
 	var conflict *feegow.ConflictError
 	if errors.As(err, &conflict) {

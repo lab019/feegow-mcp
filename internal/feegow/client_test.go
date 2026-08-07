@@ -818,3 +818,81 @@ func TestCall_DateRangeInverted_Rejected(t *testing.T) {
 		t.Fatalf("DateRangeInvertedError = {Start:%q End:%q}, want {Start:%q End:%q}", invertedErr.Start, invertedErr.End, start, end)
 	}
 }
+
+// TestCall_SuccessStatusOverride_201TreatedAsSuccess is Fase 4b's
+// regression test for EndpointDescriptor.SuccessStatus: stock.product_insert
+// is the one registry entry whose real success status is 201, not 200
+// (confirmed end-to-end against the sandbox — see its Notes). Without the
+// override, Client.Call's hard-coded StatusOK check would route this
+// response through classifyError, which has no case for 201 either and
+// would misreport a real success as an UnexpectedStatusError.
+func TestCall_SuccessStatusOverride_201TreatedAsSuccess(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/core/financial/financial-stock/product/insert", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusCreated, `{"id":1,"tipoProduto":1}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.Client(), srv.URL)
+	resp, err := c.Call(ctxWithToken("tok"), "stock.product_insert", Request{Params: map[string]any{"TipoProduto": 1}})
+	if err != nil {
+		t.Fatalf("Call: %v, want the 201 response treated as success", err)
+	}
+	if !strings.Contains(string(resp.Content), `"id":1`) {
+		t.Fatalf("Content = %s, want the raw 201 body (EnvelopeNone)", resp.Content)
+	}
+}
+
+// TestCall_SuccessStatusOverride_OtherStatusStillAnError proves the
+// override is exact, not "any 2xx passes": a 200 against an endpoint
+// declared with SuccessStatus=201 must still be classified as an error
+// (via the ordinary classifyError path), not silently accepted.
+func TestCall_SuccessStatusOverride_OtherStatusStillAnError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/core/financial/financial-stock/product/insert", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, `{"id":1}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.Client(), srv.URL)
+	_, err := c.Call(ctxWithToken("tok"), "stock.product_insert", Request{Params: map[string]any{"TipoProduto": 1}})
+	if err == nil {
+		t.Fatal("Call: got nil error for a 200 against a SuccessStatus=201 endpoint, want an error")
+	}
+}
+
+// TestCall_DeleteMethod_SendsJSONBody proves a DELETE-declared endpoint
+// (financial.invoice_remove / financial.payment_remove — confirmed by the
+// Fase 4b smoke test to genuinely require DELETE, not POST) round-trips
+// through Client.Call exactly like a POST: a JSON body, not a query
+// string, since buildRequest's switch only special-cases GET.
+func TestCall_DeleteMethod_SendsJSONBody(t *testing.T) {
+	var gotMethod string
+	var gotBody map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("/core/financial/invoice/remove", func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		writeJSON(t, w, http.StatusOK, `{"success":true,"message":"Fatura removida"}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.Client(), srv.URL)
+	_, err := c.Call(ctxWithToken("tok"), "financial.invoice_remove", Request{
+		Params: map[string]any{"invoiceId": float64(123)},
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if gotMethod != http.MethodDelete {
+		t.Fatalf("method = %q, want DELETE", gotMethod)
+	}
+	if gotBody["invoiceId"] != float64(123) {
+		t.Fatalf(`body["invoiceId"] = %v, want 123`, gotBody["invoiceId"])
+	}
+}

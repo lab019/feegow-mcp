@@ -147,3 +147,81 @@ func TestGerarSenhaAtendimento_ToolCall_RoundTrips(t *testing.T) {
 		t.Fatalf("StructuredContent = %s, want the decoded posicao", structured)
 	}
 }
+
+// TestConsultarFinanceiro_ToolCall_RoundTrips is an end-to-end sanity check
+// for the Fase 4b financeiro/estoque surface: a real tools/call for
+// consultar_financeiro, through the SDK, the auth middleware and the tool
+// wiring in tools_admin.go, returns the fake Feegow's content.
+func TestConsultarFinanceiro_ToolCall_RoundTrips(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/financial/credit-card-flags", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"success":true,"content":[{"id":1,"Bandeira":"Visa"}]}`))
+	})
+	client := fakeFeegow(t, mux)
+	session, ctx := connectAdmin(t, client, "fake-admin-token")
+
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "consultar_financeiro",
+		Arguments: map[string]any{"tipo": "bandeiras"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool(consultar_financeiro): %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("CallTool(consultar_financeiro) returned a tool error: %+v", res.Content)
+	}
+	structured, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshaling StructuredContent: %v", err)
+	}
+	if !strings.Contains(string(structured), "Visa") {
+		t.Fatalf("StructuredContent = %s, want it to contain the fake Feegow's content", structured)
+	}
+}
+
+// TestRemoverRegistroFinanceiro_ToolCall_RejectsSingleConfirmacaoWithoutCallingFeegow
+// proves the reinforced-confirmation guard is enforced through the real MCP
+// call path: confirmacao=true ALONE (without ciente_irreversivel=true) must
+// never reach the fake Feegow — this tool's whole reason for existing
+// separately from gerenciar_conta.
+func TestRemoverRegistroFinanceiro_ToolCall_RejectsSingleConfirmacaoWithoutCallingFeegow(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected Feegow call for a single-confirmed remover_registro_financeiro: %s %s", r.Method, r.URL)
+	})
+	client := fakeFeegow(t, mux)
+	session, ctx := connectAdmin(t, client, "fake-admin-token")
+
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "remover_registro_financeiro",
+		Arguments: map[string]any{
+			"tipo": "fatura", "invoice_id": 1, "confirmacao": true,
+			// ciente_irreversivel intentionally omitted
+		},
+	})
+	if err == nil && !res.IsError {
+		t.Fatalf("CallTool(remover_registro_financeiro) with only confirmacao=true: want an error (transport or tool-level), got success %+v", res)
+	}
+}
+
+// TestMovimentarEstoque_ToolCall_DeadHostAcao_RejectsWithoutCallingFeegow
+// proves acao=entrada (and its siblings saida/movimentacao) never reach the
+// fake Feegow through the real MCP call path — the dead-host refusal is
+// wired end-to-end, not just at the internal/tools layer.
+func TestMovimentarEstoque_ToolCall_DeadHostAcao_RejectsWithoutCallingFeegow(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected Feegow call for acao=entrada: %s %s", r.Method, r.URL)
+	})
+	client := fakeFeegow(t, mux)
+	session, ctx := connectAdmin(t, client, "fake-admin-token")
+
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "movimentar_estoque",
+		Arguments: map[string]any{"acao": "entrada", "confirmacao": true},
+	})
+	if err == nil && !res.IsError {
+		t.Fatalf("CallTool(movimentar_estoque, acao=entrada): want an error, got success %+v", res)
+	}
+}

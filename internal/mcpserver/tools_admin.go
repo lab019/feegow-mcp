@@ -36,6 +36,12 @@ func registerAdminOnlyTools(s *mcp.Server, client *feegow.Client) {
 	registerAnexarAoProntuario(s, client)
 	registerAtualizarStatusAgendamento(s, client)
 	registerGerarSenhaAtendimento(s, client)
+	registerConsultarFinanceiro(s, client)
+	registerGerenciarConta(s, client)
+	registerGerenciarVoucher(s, client)
+	registerRemoverRegistroFinanceiro(s, client)
+	registerConsultarEstoque(s, client)
+	registerMovimentarEstoque(s, client)
 }
 
 // registerBuscarPacientes registers buscar_pacientes: free-form patient
@@ -174,6 +180,142 @@ func registerGerarSenhaAtendimento(s *mcp.Server, client *feegow.Client) {
 		result, err := tools.GerarSenhaAtendimento(ctx, client, args)
 		if err != nil {
 			return nil, tools.GerarSenhaAtendimentoResult{}, err
+		}
+		return nil, *result, nil
+	})
+}
+
+// registerConsultarFinanceiro registers consultar_financeiro: the read-side
+// entry point into the Financeiro endpoint group (fornecedores, repasses,
+// contas, vendas, bandeiras, contas correntes, centros de custo, plano de
+// contas, invoice por nfse) — see internal/tools/financeiro_consulta.go for
+// which tipos map to which endpoint, and why tabelas_privadas/dmed are
+// recognized but always refused (endpoints confirmed dead by Fase 0).
+func registerConsultarFinanceiro(s *mcp.Server, client *feegow.Client) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "consultar_financeiro",
+		Description: "Consulta informações financeiras da clínica, escolhidas por tipo: fornecedores, " +
+			"fornecedor (detalhe por fornecedor_id), repasses, contas, vendas, bandeiras, contas_correntes, " +
+			"centros_custo, plano_contas, invoice_por_nfse. tabelas_privadas e dmed são reconhecidos mas " +
+			"SEMPRE indisponíveis — os endpoints correspondentes responderam 404 real na sondagem contra a " +
+			"API da Feegow (rota ausente nesta licença/ambiente).",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.ConsultarFinanceiroArgs) (*mcp.CallToolResult, tools.ConsultarFinanceiroResult, error) {
+		result, err := tools.ConsultarFinanceiro(ctx, client, args)
+		if err != nil {
+			return nil, tools.ConsultarFinanceiroResult{}, err
+		}
+		return nil, *result, nil
+	})
+}
+
+// registerGerenciarConta registers gerenciar_conta: creates and settles
+// "contas" (invoices) — criar, criar_por_agendamento, pagar,
+// pagar_agendamento, atualizar_nfse. Requires confirmacao=true from the
+// operador for every ação. associar_conta is recognized but always
+// unavailable — see internal/tools/financeiro_conta.go's doc comment for
+// why (the endpoint's body contract could not be confirmed against the
+// sandbox). The two DELETE operations (remover fatura/pagamento) are
+// deliberately NOT here — see registerRemoverRegistroFinanceiro.
+func registerGerenciarConta(s *mcp.Server, client *feegow.Client) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "gerenciar_conta",
+		Description: "Cria e liquida contas (invoices) financeiras da clínica: criar, " +
+			"criar_por_agendamento, pagar, pagar_agendamento, atualizar_nfse. Exige confirmação EXPLÍCITA " +
+			"do OPERADOR da clínica (confirmacao=true) — nunca assumida pelo agente/modelo. " +
+			"associar_conta é reconhecido mas SEMPRE indisponível (contrato do corpo não confirmado " +
+			"contra a API da Feegow). Para REMOVER uma fatura ou pagamento, use " +
+			"remover_registro_financeiro — não esta tool.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.GerenciarContaArgs) (*mcp.CallToolResult, tools.GerenciarContaResult, error) {
+		result, err := tools.GerenciarConta(ctx, client, args)
+		if err != nil {
+			return nil, tools.GerenciarContaResult{}, err
+		}
+		return nil, *result, nil
+	})
+}
+
+// registerGerenciarVoucher registers gerenciar_voucher: cancelar e listar
+// vouchers. acao=criar é reconhecida mas SEMPRE indisponível — ver
+// internal/tools/financeiro_voucher.go's doc comment (o endpoint de criação
+// devolveu erro 500 genérico em toda tentativa da Fase 4b, sem nomear
+// nenhum campo). Não existe ação "editar": a API da Feegow não documenta
+// nenhum endpoint de edição de voucher.
+func registerGerenciarVoucher(s *mcp.Server, client *feegow.Client) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "gerenciar_voucher",
+		Description: "Gerencia vouchers da clínica: cancelar (exige confirmação EXPLÍCITA do OPERADOR " +
+			"via confirmacao=true) e listar (leitura, paginada). acao=criar é reconhecida mas SEMPRE " +
+			"indisponível — o endpoint de criação de voucher da API da Feegow respondeu com erro interno " +
+			"em toda tentativa de sondagem, sem confirmar seu contrato.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.GerenciarVoucherArgs) (*mcp.CallToolResult, tools.GerenciarVoucherResult, error) {
+		result, err := tools.GerenciarVoucher(ctx, client, args)
+		if err != nil {
+			return nil, tools.GerenciarVoucherResult{}, err
+		}
+		return nil, *result, nil
+	})
+}
+
+// registerRemoverRegistroFinanceiro registers remover_registro_financeiro:
+// the two most destructive writes in the project (remove invoice / remove
+// payment), deliberately isolated from gerenciar_conta's everyday
+// operations — see internal/tools/financeiro_remocao.go's doc comment.
+// Requires BOTH confirmacao=true AND ciente_irreversivel=true from the
+// operador — a single confirmacao is not enough friction for an
+// irreversible delete of a client's financial record.
+func registerRemoverRegistroFinanceiro(s *mcp.Server, client *feegow.Client) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "remover_registro_financeiro",
+		Description: "IRREVERSÍVEL — remove PERMANENTEMENTE um registro financeiro do cliente (fatura ou " +
+			"pagamento), sem nenhuma forma de desfazer documentada pela API da Feegow. Exige DUAS " +
+			"confirmações EXPLÍCITAS e independentes do OPERADOR da clínica (nunca assumidas pelo " +
+			"agente/modelo): confirmacao=true E ciente_irreversivel=true.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.RemoverRegistroFinanceiroArgs) (*mcp.CallToolResult, tools.RemoverRegistroFinanceiroResult, error) {
+		result, err := tools.RemoverRegistroFinanceiro(ctx, client, args)
+		if err != nil {
+			return nil, tools.RemoverRegistroFinanceiroResult{}, err
+		}
+		return nil, *result, nil
+	})
+}
+
+// registerConsultarEstoque registers consultar_estoque: posição de produtos
+// e lista de produtos, ambas paginadas com teto (default 20, máx 100).
+func registerConsultarEstoque(s *mcp.Server, client *feegow.Client) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "consultar_estoque",
+		Description: "Consulta o estoque de produtos da clínica, escolhido por tipo: posicao (posição de " +
+			"produtos, filtros em português) ou lista_produtos (lista de produtos, filtros em inglês — os " +
+			"nomes dos filtros genuinamente divergem entre os dois endpoints). Sempre paginado " +
+			"(limit/offset, teto 100).",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.ConsultarEstoqueArgs) (*mcp.CallToolResult, tools.ConsultarEstoqueResult, error) {
+		result, err := tools.ConsultarEstoque(ctx, client, args)
+		if err != nil {
+			return nil, tools.ConsultarEstoqueResult{}, err
+		}
+		return nil, *result, nil
+	})
+}
+
+// registerMovimentarEstoque registers movimentar_estoque: acao=inserir_produto
+// é a ÚNICA ação que realmente chama a Feegow — entrada, saida e
+// movimentacao são reconhecidas mas SEMPRE indisponíveis, porque os
+// endpoints correspondentes vivem sob core.feegow.com.br, um host
+// confirmado MORTO pela Fase 0 (não resolve). Exige confirmação EXPLÍCITA
+// do OPERADOR da clínica (confirmacao=true).
+func registerMovimentarEstoque(s *mcp.Server, client *feegow.Client) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "movimentar_estoque",
+		Description: "Movimenta o estoque de produtos da clínica. Só acao=inserir_produto está " +
+			"disponível de fato (insere um novo produto no catálogo de estoque) — entrada, saida e " +
+			"movimentacao são reconhecidas mas SEMPRE indisponíveis, pois os endpoints correspondentes " +
+			"vivem sob um host (core.feegow.com.br) confirmado inacessível nesta licença/ambiente. Exige " +
+			"confirmação EXPLÍCITA do OPERADOR da clínica (confirmacao=true) — nunca assumida pelo " +
+			"agente/modelo.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.MovimentarEstoqueArgs) (*mcp.CallToolResult, tools.MovimentarEstoqueResult, error) {
+		result, err := tools.MovimentarEstoque(ctx, client, args)
+		if err != nil {
+			return nil, tools.MovimentarEstoqueResult{}, err
 		}
 		return nil, *result, nil
 	})
