@@ -193,6 +193,46 @@ func TestAtendimentoToolList_NeverContainsAdminOnlyTools(t *testing.T) {
 	}
 }
 
+// TestAdminToolList_HasTheSevenFase4aAdminOnlyTools is the direct
+// acceptance criterion for Fase 4a: the admin profile's tools/list contains
+// exactly the nine atendimento tools plus the seven admin-only
+// paciente/agenda tools this phase adds — no more (financeiro, estoque,
+// propostas, laudos, faturamento, relatórios and funcionários are Fase 4b).
+func TestAdminToolList_HasTheSevenFase4aAdminOnlyTools(t *testing.T) {
+	srv := httptest.NewServer(AdminHandler())
+	defer srv.Close()
+
+	names := listToolNames(t, srv.URL, "fake-admin-token")
+	want := map[string]bool{
+		// Fase 2/3 atendimento tools, inherited structurally.
+		"listar_catalogo":        true,
+		"buscar_horarios_livres": true,
+		"identificar_paciente":   true,
+		"consultar_agenda":       true,
+		"agendar":                true,
+		"cancelar":               true,
+		"remarcar":               true,
+		"confirmar":              true,
+		"criar_paciente":         true,
+		// Fase 4a admin-only tools.
+		"buscar_pacientes":             true,
+		"obter_paciente":               true,
+		"consultar_paciente_clinico":   true,
+		"atualizar_paciente":           true,
+		"anexar_ao_prontuario":         true,
+		"atualizar_status_agendamento": true,
+		"gerar_senha_atendimento":      true,
+	}
+	if len(names) != len(want) {
+		t.Fatalf("admin tools/list = %v (%d tools), want exactly %d tools", names, len(names), len(want))
+	}
+	for _, n := range names {
+		if !want[n] {
+			t.Fatalf("admin tools/list contains unexpected tool %q (full list: %v)", n, names)
+		}
+	}
+}
+
 // TestAdminToolList_IsSupersetOfAtendimento locks in the structural
 // invariant from ESPECIFICACAO.md §3: the admin profile must expose
 // everything atendimento does, plus admin-only tools on top. Composing

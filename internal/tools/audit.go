@@ -62,3 +62,37 @@ func auditReuse(tool string, pacienteID int) {
 	log.Printf("feegow: REUSE %s — identidade ALEGADA (não verificada) resolveu paciente_id=%d; cadastro já existia, patient/create NÃO foi chamado",
 		tool, pacienteID)
 }
+
+// auditAdminWrite is auditWrite's admin-profile counterpart: it records
+// that an admin write tool actually executed a mutating Feegow call.
+// Deliberately a DIFFERENT log line, not a call to auditWrite, because the
+// "identidade ALEGADA (não verificada)" framing auditWrite always spells
+// out is specific to atendimento's unauthenticated, self-declared identity
+// — it does not apply here. The admin profile's caller is authenticated by
+// the clínica's own Feegow token before the call ever reaches this service
+// (see internal/mcpserver's package doc on the two profiles), so this line
+// only needs to record WHAT happened, never hedge about WHO claims to be
+// acting.
+//
+// Same PII discipline as auditWrite regardless: only internal Feegow
+// identifiers — paciente_id, agendamento_id — ever reach this line, never a
+// CPF, telefone, nome or data de nascimento. Pass 0 for whichever id does
+// not apply to a given write (e.g. agendamentoID for atualizar_paciente,
+// pacienteID for atualizar_status_agendamento) — 0 is never a real Feegow
+// id, so it is unambiguous as a "not applicable" sentinel, same convention
+// auditWrite's agendamentoID already uses.
+func auditAdminWrite(tool string, pacienteID, agendamentoID int) {
+	if !loglevel.Verbose() {
+		return
+	}
+	switch {
+	case pacienteID != 0 && agendamentoID != 0:
+		log.Printf("feegow: ADMIN WRITE %s — paciente_id=%d; agendamento_id=%d", tool, pacienteID, agendamentoID)
+	case pacienteID != 0:
+		log.Printf("feegow: ADMIN WRITE %s — paciente_id=%d", tool, pacienteID)
+	case agendamentoID != 0:
+		log.Printf("feegow: ADMIN WRITE %s — agendamento_id=%d", tool, agendamentoID)
+	default:
+		log.Printf("feegow: ADMIN WRITE %s", tool)
+	}
+}

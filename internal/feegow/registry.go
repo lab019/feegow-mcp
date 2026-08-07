@@ -229,6 +229,61 @@ var Registry = map[EndpointID]EndpointDescriptor{
 			"appoints.new_appoint_v2: formato não observado diretamente em v2.",
 	},
 
+	// appoints.status_update ("Atualizar status") is documented (doc.txt),
+	// but only confirmed by the Fase 0 smoke test negatively: POST with
+	// lowercase field names (agendamento_id/status_id, as a naive caller
+	// would guess) returned a REAL 422 naming the actual fields in
+	// PascalCase — AgendamentoID, StatusID — matching doc.txt's own
+	// example exactly. No full success round trip was attempted (that
+	// would mutate a real agendamento's status as a side effect of a
+	// scan, which Fase 0 deliberately avoided beyond the create/cancel
+	// pair already used for appoints.new_appoint). Verified stays false
+	// for that reason alone; the wire contract itself is trustworthy.
+	"appoints.status_update": {
+		ID:       "appoints.status_update",
+		Host:     HostAPI,
+		Method:   http.MethodPost,
+		Path:     "/appoints/statusUpdate",
+		Envelope: EnvelopeStandard,
+		Verified: false,
+		Notes: "Confirmado pela Fase 0 só por rejeição: enviar agendamento_id/status_id " +
+			"(lowercase, como um caller ingênuo tentaria) devolveu 422 nomeando os campos " +
+			"reais em PascalCase — AgendamentoID, StatusID — batendo com o exemplo de " +
+			"doc.txt. Nenhuma chamada de sucesso ponta a ponta foi feita (seria uma escrita " +
+			"real sobre o status de um agendamento, fora do escopo da varredura). Corpo " +
+			"(POST): AgendamentoID (numeric, obrigatório), StatusID (numeric, obrigatório — " +
+			"doc.txt manda como string no exemplo, mas o campo é numeric; aceitar int aqui), " +
+			"Obs (string, opcional), HoraChegada (string HH:MM, opcional, só para o status " +
+			"\"aguardando\"). Envelope assumido {success,content} (padrão do grupo " +
+			"Agendamentos, igual /appoints/cancel-appoint), não observado diretamente.",
+	},
+
+	// appoints.queue_position ("Gerar senha de atendimento") — confirmado
+	// PONTA A PONTA pela Fase 0: GET ?unidade_id=0&tipo_senha=1 → 200,
+	// content real {"posicao":1,"tipoSenha":1,"tipoFormatado":"P"}. A
+	// chave de nível superior é "sucess" (com esse erro de digitação),
+	// NÃO "success" — confirmado tanto no corpo real quanto no próprio
+	// exemplo de doc.txt (mesmo typo nos dois), então não é um bug desta
+	// integração. EnvelopeStandard aqui faria parseSuccess nunca achar
+	// "success" e tratar toda resposta de sucesso como um 409 — mesma
+	// razão de patient.check_eligibility logo abaixo.
+	"appoints.queue_position": {
+		ID:       "appoints.queue_position",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/appoints/queue-position",
+		Envelope: EnvelopeNone,
+		Verified: true,
+		Notes: "Resposta usa a chave \"sucess\" (com esse erro de digitação, não \"success\") " +
+			"— confirmado ponta a ponta pela Fase 0 (200, content real: posicao, tipoSenha, " +
+			"tipoFormatado) e o próprio doc.txt já mostra o mesmo typo no exemplo. Por isso " +
+			"EnvelopeNone: usar EnvelopeStandard faria parseSuccess nunca achar \"success\" e " +
+			"tratar toda resposta de sucesso como um 409. QUERY PARAMS: unidade_id (numeric, " +
+			"obrigatório — 0 é um valor real, \"unidade principal\", confirmado pelo próprio " +
+			"exemplo de doc.txt), tipo_senha (numeric 0-4, obrigatório: 0=G, 1=P, 2=C, 3=E, " +
+			"4=R — doc.txt não expande o que cada letra significa).",
+	},
+
 	// --- Bloqueios (api.feegow.com/v1/api) ------------------------------
 	//
 	// The doc.txt parameter TABLE for this endpoint says "DD-MM-YYYY" for
@@ -380,6 +435,125 @@ var Registry = map[EndpointID]EndpointDescriptor{
 			"Supported methods: POST.\", confirmando que só POST é aceito. Contrato além de " +
 			"paciente_id (quais campos são editáveis, formato de datas) NÃO confirmado — nenhuma " +
 			"edição completa foi tentada em v2.",
+	},
+
+	// patient.list_dependents ("Listar dependentes") — confirmado ponta a
+	// ponta pela Fase 0: GET ?paciente_id=1 → 200, envelope padrão
+	// {success,content,total}, content:[] para um paciente sem
+	// dependentes. Único parâmetro é paciente_id (obrigatório).
+	"patient.list_dependents": {
+		ID:       "patient.list_dependents",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/patient/list-dependents",
+		Envelope: EnvelopeStandard,
+		Verified: true,
+		Notes:    "Único parâmetro é paciente_id (obrigatório, numeric). Perfil admin (dado de paciente).",
+	},
+
+	// patient.list_sources ("Listar origens") — confirmado ponta a ponta
+	// pela Fase 0: GET sem parâmetros → 200, envelope padrão
+	// {success,content,total}, 11 origens reais devolvidas. Catálogo da
+	// clínica (não é dado de paciente individual), mas vive sob /patient
+	// na API — interpreta o origem_id que aparece em patient.list/
+	// patient.search.
+	"patient.list_sources": {
+		ID:       "patient.list_sources",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/patient/list-sources",
+		Envelope: EnvelopeStandard,
+		Verified: true,
+		Notes:    "Sem parâmetros. Catálogo (origens de cadastro), não dado individual de paciente.",
+	},
+
+	// patient.list_privates ("Listar tabelas particulares") — confirmado
+	// ponta a ponta pela Fase 0: GET sem parâmetros → 200, envelope
+	// padrão {success,content,total}. Catálogo da clínica, mesma situação
+	// de patient.list_sources — interpreta o tabela_id que aparece em
+	// patient.edit/patient.create.
+	"patient.list_privates": {
+		ID:       "patient.list_privates",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/patient/list-privates",
+		Envelope: EnvelopeStandard,
+		Verified: true,
+		Notes:    "Sem parâmetros. Catálogo (tabelas particulares), não dado individual de paciente.",
+	},
+
+	// patient.health_programs ("Listar programas de saúde") — confirmado
+	// ponta a ponta pela Fase 0: GET sem parâmetros → 200, envelope
+	// padrão {success,content,total}. IMPORTANTE: apesar de viver sob o
+	// grupo "Pacientes" da doc, este endpoint NÃO tem filtro por
+	// paciente_id — é o catálogo dos programas de saúde que a clínica
+	// mantém (programa_id, nome_programa, tipo_programa_id, ...), não os
+	// programas em que um paciente específico está inscrito (essa
+	// informação vem embutida no próprio content de patient.search, campo
+	// "programa_de_saude"). internal/tools precisa saber disso para não
+	// tratar paciente_id como um filtro real aqui.
+	"patient.health_programs": {
+		ID:     "patient.health_programs",
+		Host:   HostAPI,
+		Method: http.MethodGet,
+		Path:   "/patient/health-programs",
+		Pagination: PaginationSpec{
+			Kind:        PaginationLimitOffset,
+			LimitParam:  "limit",
+			OffsetParam: "offset",
+		},
+		Envelope: EnvelopeStandard,
+		Verified: true,
+		Notes: "SEM filtro por paciente_id — é o catálogo de programas de saúde da clínica " +
+			"(programa_id, nome_programa, convenio_id, status, tipo_programa_id), não os " +
+			"programas de um paciente específico (isso já vem embutido em patient.search's " +
+			"content.programa_de_saude). data_start/data_end (yyyy-mm-dd) já chegam prontos " +
+			"— sem tradução necessária, mesmo padrão de patient.create/patient.edit.",
+	},
+
+	// patient.exam_requests ("Listar pedidos de exâmes") — confirmado
+	// ponta a ponta pela Fase 0: GET ?paciente_id=1 → 200, envelope padrão
+	// {success,content,total}, content:[] para paciente sem pedidos.
+	// paciente_id, data_inicio, data_fim e tipo_pedido são todos
+	// obrigatórios per doc.txt (nenhum tem a tag "(opcional)").
+	"patient.exam_requests": {
+		ID:       "patient.exam_requests",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/patient/exam-requests",
+		Envelope: EnvelopeStandard,
+		Verified: true,
+		Notes: "paciente_id, data_inicio, data_fim e tipo_pedido (1=Padrão, 2=SADT) são " +
+			"obrigatórios per doc.txt. paciente_cpf é opcional, junto com paciente_id. " +
+			"data_inicio/data_fim já chegam em YYYY-MM-DD — sem tradução necessária, mesmo " +
+			"padrão de patient.create/patient.edit.",
+	},
+
+	// patient.upload_base64 ("Upload de arquivo para o prontuário") NÃO
+	// foi exercitado pela Fase 0 de propósito: uma chamada real geraria um
+	// arquivo de teste dentro do prontuário de um paciente da sandbox,
+	// um efeito colateral mais invasivo que os agendamentos de teste
+	// criados/cancelados, e fora do escopo de uma varredura de leitura.
+	// Contrato só a partir de doc.txt. A resposta de sucesso documentada é
+	// {"success":true,"fileId":N,"content":"..."} — fileId vive FORA do
+	// campo "content", então EnvelopeStandard perderia esse dado (só
+	// devolve o content); por isso EnvelopeNone, com a tool decodificando
+	// o corpo cru (mesma razão de appoints.queue_position acima).
+	"patient.upload_base64": {
+		ID:       "patient.upload_base64",
+		Host:     HostAPI,
+		Method:   http.MethodPost,
+		Path:     "/patient/upload-base64",
+		Envelope: EnvelopeNone,
+		Verified: false,
+		Notes: "NÃO exercitado pela Fase 0 (evitado de propósito: geraria um arquivo real no " +
+			"prontuário de um paciente de teste). Contrato só a partir de doc.txt: paciente_id " +
+			"OU (cpf+nascimento) — um dos dois obrigatório —, base64_file (string, " +
+			"obrigatório, formato \"data:<content-type>;base64,<hash>\"), arquivo_descricao " +
+			"(opcional), arquivo_id (opcional, substitui um arquivo existente). Resposta de " +
+			"sucesso documentada: {\"success\":true,\"fileId\":N,\"content\":\"Arquivo " +
+			"enviado com sucesso.\"} — fileId fora do campo \"content\", por isso EnvelopeNone " +
+			"em vez de EnvelopeStandard (que descartaria fileId).",
 	},
 
 	// medical_record.timeline ("Prontuário: Linha do tempo") is
