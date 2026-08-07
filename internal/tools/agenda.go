@@ -14,7 +14,17 @@ import (
 // notas (free-text notes can carry clinical detail), agendado_por, valor,
 // and every other field /appoints/search returns — see ESPECIFICACAO.md
 // §10 ("tools de leitura retornam campos selecionados").
+//
+// AgendamentoID IS included — unlike every other field here, it is not
+// patient content but the handle the Fase 3 write tools (cancelar,
+// remarcar, confirmar) need: a caller can only tell this service which
+// agendamento to act on by first learning its id from here. Exposing it
+// costs nothing privacy-wise (it identifies a booking, not a person) and
+// omitting it would make those write tools unreachable in a real
+// conversation — there would be no way for an agent to ever learn a valid
+// id to send them.
 type Agendamento struct {
+	AgendamentoID   int    `json:"agendamento_id"`
 	Data            string `json:"data"` // ISO-8601 (YYYY-MM-DD)
 	Horario         string `json:"horario"`
 	ProfissionalID  int    `json:"profissional_id"`
@@ -30,8 +40,18 @@ type ConsultarAgendaResult struct {
 }
 
 // appointSearchEntry is the subset of one /appoints/search result entry
-// this package maps into Agendamento.
+// this package maps into Agendamento. AgendamentoID also doubles as the
+// posse (ownership) key resolveOwnedAgendamento (agendamento_escrita.go)
+// matches a caller-supplied agendamento_id against — see that file's doc
+// comment. PacienteID exists PURELY for that same posse check: it is the
+// owner Feegow itself reports back for an agendamento, compared against the
+// caller's resolved identity on our side. It must NEVER be copied into
+// Agendamento/ConsultarAgendaResult — consultar_agenda's "no PII in the
+// result" contract (this file's Agendamento doc comment) still applies; this
+// field only ever travels internally.
 type appointSearchEntry struct {
+	AgendamentoID   int    `json:"agendamento_id"`
+	PacienteID      int    `json:"paciente_id"`
 	Data            string `json:"data"` // DD-MM-YYYY on the wire
 	Horario         string `json:"horario"`
 	ProfissionalID  int    `json:"profissional_id"`
@@ -97,6 +117,7 @@ func consultarAgenda(ctx context.Context, client *feegow.Client, args Identidade
 			data = t.Format(feegow.ISO8601)
 		}
 		agendamentos = append(agendamentos, Agendamento{
+			AgendamentoID:   e.AgendamentoID,
 			Data:            data,
 			Horario:         e.Horario,
 			ProfissionalID:  e.ProfissionalID,

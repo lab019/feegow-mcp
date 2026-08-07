@@ -98,6 +98,7 @@ func TestConsultarAgenda_Success(t *testing.T) {
 		t.Fatalf("Agendamentos = %+v, want exactly 1 entry", result.Agendamentos)
 	}
 	want := Agendamento{
+		AgendamentoID:   30,
 		Data:            "2024-08-07",
 		Horario:         "09:00:00",
 		ProfissionalID:  1,

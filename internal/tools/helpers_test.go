@@ -3,6 +3,7 @@ package tools
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -57,3 +58,14 @@ func captureLog(t *testing.T) *bytes.Buffer {
 }
 
 func intPtr(n int) *int { return &n }
+
+// decodeJSONBody decodes a POST request's JSON body into out — used by the
+// write-tool tests to assert on the exact wire payload a Feegow write
+// endpoint received.
+func decodeJSONBody(t *testing.T, r *http.Request, out *map[string]any) {
+	t.Helper()
+	defer r.Body.Close()
+	if err := json.NewDecoder(r.Body).Decode(out); err != nil {
+		t.Fatalf("decoding request body: %v", err)
+	}
+}
