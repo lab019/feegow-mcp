@@ -126,16 +126,28 @@ func (rt bearerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	return rt.base.RoundTrip(req)
 }
 
-// TestAtendimentoToolList_IsEmptyInThisPhase is the direct acceptance
-// criterion for Fase 1: the atendimento profile's tools/list returns no
-// tools yet (they arrive in Fases 2-3).
-func TestAtendimentoToolList_IsEmptyInThisPhase(t *testing.T) {
+// TestAtendimentoToolList_HasTheFourFase2Tools is the direct acceptance
+// criterion for Fase 2: the atendimento profile's tools/list contains
+// exactly the four read-only tools this phase adds, no more (writes are
+// Fase 3, admin-only tools are Fase 4).
+func TestAtendimentoToolList_HasTheFourFase2Tools(t *testing.T) {
 	srv := httptest.NewServer(Handler())
 	defer srv.Close()
 
 	names := listToolNames(t, srv.URL, "fake-token")
-	if len(names) != 0 {
-		t.Fatalf("atendimento tools/list = %v, want empty in this phase", names)
+	want := map[string]bool{
+		"listar_catalogo":        true,
+		"buscar_horarios_livres": true,
+		"identificar_paciente":   true,
+		"consultar_agenda":       true,
+	}
+	if len(names) != len(want) {
+		t.Fatalf("atendimento tools/list = %v, want exactly %v", names, want)
+	}
+	for _, n := range names {
+		if !want[n] {
+			t.Fatalf("atendimento tools/list contains unexpected tool %q (full list: %v)", n, names)
+		}
 	}
 }
 

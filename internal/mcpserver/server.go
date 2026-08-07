@@ -17,6 +17,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/lab019/feegow-mcp/internal/auth"
+	"github.com/lab019/feegow-mcp/internal/feegow"
 )
 
 const (
@@ -38,7 +39,7 @@ func newAtendimento() *mcp.Server {
 			"\"Authorization: Bearer <token>\"; this server performs no " +
 			"authentication of its own and stores no tokens.",
 	})
-	registerAtendimentoTools(s)
+	registerAtendimentoTools(s, feegow.NewFromEnv())
 	return s
 }
 
@@ -61,16 +62,33 @@ func newAdmin() *mcp.Server {
 			"\"Authorization: Bearer <token>\"; this server performs no " +
 			"authentication of its own and stores no tokens.",
 	})
-	registerAdminTools(s)
+	registerAdminTools(s, feegow.NewFromEnv())
+	return s
+}
+
+// newAtendimentoWithClient is like newAtendimento but takes an explicit
+// *feegow.Client instead of building one from the process environment.
+// Tests use this to point every tool call at an httptest.Server instead of
+// Feegow's real hosts, without relying on FEEGOW_HOST_OVERRIDE / t.Setenv.
+func newAtendimentoWithClient(client *feegow.Client) *mcp.Server {
+	s := mcp.NewServer(&mcp.Implementation{
+		Name:    atendimentoServerName,
+		Version: serverVersion,
+	}, nil)
+	registerAtendimentoTools(s, client)
 	return s
 }
 
 // registerAtendimentoTools registers every tool exposed on the atendimento
-// profile. This is the single, obvious place atendimento tools get wired
-// in — Fases 2 and 3 add to it. Empty in this phase (Fase 1): tools/list on
-// /mcp returns no tools yet.
-func registerAtendimentoTools(_ *mcp.Server) {
-	// Fase 2: tools de atendimento somente leitura.
+// profile against client. This is the single, obvious place atendimento
+// tools get wired in — Fase 3 adds writes on top of Fase 2's reads. See
+// tools.go for the actual tool definitions; this file only wires them to
+// an *mcp.Server.
+func registerAtendimentoTools(s *mcp.Server, client *feegow.Client) {
+	registerListarCatalogo(s, client)
+	registerBuscarHorariosLivres(s, client)
+	registerIdentificarPaciente(s, client)
+	registerConsultarAgenda(s, client)
 	// Fase 3: escritas de atendimento + as guardas de negócio do §7.
 }
 
@@ -79,8 +97,8 @@ func registerAtendimentoTools(_ *mcp.Server) {
 // calling registerAtendimentoTools first — is what makes the "admin is a
 // superset of atendimento" contract in ESPECIFICACAO.md §3 structural
 // rather than something that can drift out of sync by hand.
-func registerAdminTools(s *mcp.Server) {
-	registerAtendimentoTools(s)
+func registerAdminTools(s *mcp.Server, client *feegow.Client) {
+	registerAtendimentoTools(s, client)
 	// Fase 4: tools exclusivas do perfil admin (financeiro, estoque,
 	// propostas, laudos, faturamento, relatórios, funcionários, escritas de
 	// cartão de benefício).

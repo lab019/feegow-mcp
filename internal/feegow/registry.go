@@ -61,6 +61,38 @@ var Registry = map[EndpointID]EndpointDescriptor{
 			"modelada aqui, mas a tool desta Fase 2+ precisa saber disso.",
 	},
 
+	// /appoints/status, /appoints/motives and /appoints/list-channel are
+	// parameterless catalog lookups (Fase 2's listar_catalogo tool):
+	// status_id/motivo_id/canal_id are the values other write endpoints
+	// (statusUpdate, cancel-appoint/reschedule, new-appoint) reference, but
+	// none of those three take a request parameter of their own.
+	"appoints.status": {
+		ID:       "appoints.status",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/appoints/status",
+		Envelope: EnvelopeStandard,
+		Verified: true,
+	},
+
+	"appoints.motives": {
+		ID:       "appoints.motives",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/appoints/motives",
+		Envelope: EnvelopeStandard,
+		Verified: true,
+	},
+
+	"appoints.list_channel": {
+		ID:       "appoints.list_channel",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/appoints/list-channel",
+		Envelope: EnvelopeStandard,
+		Verified: true,
+	},
+
 	"appoints.new_appoint": {
 		ID:     "appoints.new_appoint",
 		Host:   HostAPI,
@@ -128,6 +160,24 @@ var Registry = map[EndpointID]EndpointDescriptor{
 	},
 
 	// --- Pacientes (api.feegow.com/v1/api) ------------------------------
+	//
+	// doc.txt documents this endpoint twice with different query params:
+	// once as paciente_id+photo, once as paciente_cpf+paciente_id+photo+
+	// programa_saude — and the second section is literally titled "Buscar
+	// paciente passando por cpf e celular" ("by CPF AND cellphone"), yet its
+	// own parameter table never lists a celular/phone field. This is one of
+	// the doc's known self-contradictions (ESPECIFICACAO.md §8). The
+	// Host/Path/Method/Envelope translation here is unambiguous (both
+	// examples agree), so Verified stays true.
+	//
+	// Not reachable from the atendimento profile: this is a detail-by-id
+	// lookup (the only parameter either example actually documents is
+	// paciente_id) and its response carries no id field at all — expected,
+	// since the id was the input — which makes it useless for resolving an
+	// identity from cpf/telefone. internal/tools uses patient.list for that
+	// (see internal/tools/paciente.go). Stays in Registry for a possible
+	// future admin tool that already has a paciente_id in hand, but no
+	// atendimento tool calls it.
 	"patient.search": {
 		ID:       "patient.search",
 		Host:     HostAPI,
@@ -135,6 +185,13 @@ var Registry = map[EndpointID]EndpointDescriptor{
 		Path:     "/patient/search",
 		Envelope: EnvelopeStandard,
 		Verified: true,
+		Notes: "Doc bug conhecido (ESPECIFICACAO.md §8): a seção \"Buscar paciente\" tem duas " +
+			"tabelas de parâmetros diferentes; uma delas se chama \"...passando por cpf e celular\" " +
+			"mas não lista nenhum campo de celular/telefone. Não é usado pelo perfil de " +
+			"atendimento: é busca por paciente_id (detalhe, não busca por atributo) e sua " +
+			"resposta não contém nenhum campo de id — natural, já que o id foi a entrada —, " +
+			"então não serve para resolver identidade a partir de cpf/telefone. " +
+			"internal/tools.identifyByCPF/identifyByPhone usam patient.list para isso.",
 	},
 
 	// /patient/list's limit/offset are already true deslocamento semantics
@@ -143,6 +200,16 @@ var Registry = map[EndpointID]EndpointDescriptor{
 	// PaginationLimitOffset, included specifically to prove the
 	// no-translation-needed path is also exercised by the registry-driven
 	// tests, not just the endpoints that need real conversion.
+	//
+	// This is the endpoint identificar_paciente actually resolves identity
+	// against (internal/tools/paciente.go) — its response carries
+	// patient_id, nome and nascimento (ISO-8601 here, unlike patient.search's
+	// DD-MM-YYYY), and it documents real cpf/telefone filters. It was
+	// excluded from the atendimento profile as a *tool* (listing every
+	// cadastro is enumeration), not as an implementation detail: the tools
+	// built on it always send both required identity filters and a low
+	// limit, never call it unfiltered, and no "listar pacientes" tool is
+	// exposed on top of it.
 	"patient.list": {
 		ID:     "patient.list",
 		Host:   HostAPI,
@@ -157,7 +224,11 @@ var Registry = map[EndpointID]EndpointDescriptor{
 		Verified: true,
 		Notes: "alterado_em (yyyy-mm-dd) e data_aniversario (dd-mm) são filtros auxiliares, não " +
 			"modelados como DateParam aqui: nenhum dos dois é um range start/end nem uma data " +
-			"única no sentido dos outros endpoints, e ambos já aceitam o valor como string livre.",
+			"única no sentido dos outros endpoints, e ambos já aceitam o valor como string livre. " +
+			"Doc bug conhecido (ESPECIFICACAO.md §8): a prosa descreve data_aniversario como " +
+			"\"dd-mm\", mas o próprio exemplo do doc.txt (\"data_aniversario=01-30\" para uma " +
+			"nascimento \"...-01-30\") é inequivocamente MM-DD; internal/tools/paciente.go " +
+			"implementa o exemplo, não a prosa.",
 	},
 
 	// patient.create and patient.edit: data_nascimento/validade in the
@@ -236,6 +307,29 @@ var Registry = map[EndpointID]EndpointDescriptor{
 		Host:     HostAPI,
 		Method:   http.MethodGet,
 		Path:     "/procedures/types",
+		Envelope: EnvelopeStandard,
+		Verified: true,
+	},
+
+	// /procedures/groups and /procedures/bundles ("Grupos de procedimentos"
+	// / "Listar pacotes" in doc.txt) both take only an optional numeric ID
+	// filter (grupo_id / procedimento_id+pacote_id respectively) — no dates,
+	// no pagination. listar_catalogo (Fase 2) calls both with no filter to
+	// list everything, matching every other catalog entry in this table.
+	"procedures.groups": {
+		ID:       "procedures.groups",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/procedures/groups",
+		Envelope: EnvelopeStandard,
+		Verified: true,
+	},
+
+	"procedures.bundles": {
+		ID:       "procedures.bundles",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/procedures/bundles",
 		Envelope: EnvelopeStandard,
 		Verified: true,
 	},

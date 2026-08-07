@@ -33,3 +33,16 @@ func Verbose() bool {
 		return false
 	}
 }
+
+// WarnEnabled reports whether a WARN-severity line should be emitted, as
+// currently configured via LOG_LEVEL. Unlike Verbose — which gates
+// informational/audit logging and goes silent for anything other than
+// "DEBUG"/"INFO" — a WARN-severity line is an operational alert (e.g. an
+// upstream API responding in a shape this service no longer understands),
+// so it stays visible at every level down to and including "WARN": the
+// default ("INFO"), "DEBUG" and "WARN" itself all keep it on. Only an
+// explicit stricter setting ("ERROR") turns it off, matching the usual
+// meaning of raising a log threshold above WARN.
+func WarnEnabled() bool {
+	return strings.ToUpper(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) != "ERROR"
+}
