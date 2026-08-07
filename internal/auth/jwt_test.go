@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -93,5 +94,105 @@ func TestClaims_Expired_NilClaimsIsFalse(t *testing.T) {
 	var claims *Claims
 	if claims.Expired() {
 		t.Fatalf("Expired() on nil claims = true, want false")
+	}
+}
+
+// TestClaims_Identity_TruncatesOversizedClaim is the regression test for
+// achado 1 in the Fase 1a review: a forged token's "sub" (or any other
+// identity claim — the signature is never verified, see DecodeJWTClaims)
+// with an unbounded length must not be logged verbatim, or a single
+// request can blow up the audit log.
+func TestClaims_Identity_TruncatesOversizedClaim(t *testing.T) {
+	huge := strings.Repeat("a", 10_000)
+	claims := &Claims{Raw: map[string]any{"sub": huge}}
+
+	got := claims.Identity()
+
+	gotRunes := []rune(got)
+	if len(gotRunes) != identityMaxRunes+1 { // +1 for the trailing ellipsis rune
+		t.Fatalf("Identity() length = %d runes, want %d (identityMaxRunes + ellipsis)", len(gotRunes), identityMaxRunes+1)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("Identity() = %q, want a trailing ellipsis marking truncation", got)
+	}
+	wantPrefix := huge[:identityMaxRunes]
+	if !strings.HasPrefix(got, wantPrefix) {
+		t.Fatalf("Identity() did not preserve the claim's first %d chars", identityMaxRunes)
+	}
+}
+
+// TestClaims_Identity_ShortClaimUntouched proves truncation only kicks in
+// past the cap — a normal-length identity claim must come back byte-for-
+// byte identical, with no ellipsis appended.
+func TestClaims_Identity_ShortClaimUntouched(t *testing.T) {
+	claims := &Claims{Raw: map[string]any{"sub": "clinica-42"}}
+	if got := claims.Identity(); got != "clinica-42" {
+		t.Fatalf("Identity() = %q, want %q (unmodified)", got, "clinica-42")
+	}
+}
+
+// TestClaims_Identity_TruncatesOnRunesNotBytes guards against splitting a
+// multi-byte UTF-8 character at the truncation boundary, which would
+// produce invalid UTF-8 in the audit log line.
+func TestClaims_Identity_TruncatesOnRunesNotBytes(t *testing.T) {
+	// "á" is 2 bytes in UTF-8 but 1 rune; repeating it identityMaxRunes+50
+	// times means a byte-based cut at identityMaxRunes bytes would land
+	// mid-character, while a rune-based cut never does.
+	huge := strings.Repeat("á", identityMaxRunes+50)
+	claims := &Claims{Raw: map[string]any{"sub": huge}}
+
+	got := claims.Identity()
+
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("Identity() = %q, want a trailing ellipsis", got)
+	}
+	trimmed := strings.TrimSuffix(got, "…")
+	if !isValidUTF8(trimmed) {
+		t.Fatalf("Identity() produced invalid UTF-8 by cutting mid-rune: %q", trimmed)
+	}
+	if got := len([]rune(trimmed)); got != identityMaxRunes {
+		t.Fatalf("truncated identity has %d runes, want %d", got, identityMaxRunes)
+	}
+}
+
+func isValidUTF8(s string) bool {
+	for _, r := range s {
+		if r == '�' {
+			return false
+		}
+	}
+	return true
+}
+
+// TestAuditLog_GatedByLogLevel is the regression test for achado 2 in the
+// Fase 1a review: LOG_LEVEL must actually control something. At a
+// non-verbose level, the audit line Middleware emits on successful auth
+// must not be written at all.
+func TestAuditLog_GatedByLogLevel(t *testing.T) {
+	t.Setenv("LOG_LEVEL", "WARN")
+	logOut := captureAuditLog(t)
+
+	auditLog("feegow-mcp: authenticated request, identity=%q", "clinica-42")
+
+	if got := logOut.String(); got != "" {
+		t.Fatalf("auditLog wrote output with LOG_LEVEL=WARN: %q, want nothing", got)
+	}
+}
+
+// TestAuditLog_VerboseByDefault is the complement of
+// TestAuditLog_GatedByLogLevel: with LOG_LEVEL unset (the documented
+// default) or explicitly "INFO"/"DEBUG", the audit line is still emitted.
+func TestAuditLog_VerboseByDefault(t *testing.T) {
+	for _, level := range []string{"", "INFO", "DEBUG"} {
+		t.Run("LOG_LEVEL="+level, func(t *testing.T) {
+			t.Setenv("LOG_LEVEL", level)
+			logOut := captureAuditLog(t)
+
+			auditLog("feegow-mcp: authenticated request, identity=%q", "clinica-42")
+
+			if got := logOut.String(); got == "" {
+				t.Fatalf("auditLog wrote nothing with LOG_LEVEL=%q, want a log line", level)
+			}
+		})
 	}
 }

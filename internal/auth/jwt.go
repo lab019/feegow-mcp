@@ -7,6 +7,8 @@ import (
 	"log"
 	"strings"
 	"time"
+
+	"github.com/lab019/feegow-mcp/internal/loglevel"
 )
 
 // Claims is the subset of a Feegow bearer token's JWT payload this service
@@ -94,11 +96,23 @@ func (c *Claims) Expired() bool {
 // token happens to carry — is what audit logging has to work with.
 var identityClaimKeys = []string{"sub", "user", "usuario", "licenca", "license", "name", "email"}
 
+// identityMaxRunes bounds how much of a claim value Identity() ever
+// returns. The claim is unauthenticated, attacker-controlled input (see
+// DecodeJWTClaims: the signature is never verified) — auditLog's "%q"
+// already neutralizes it as a *log-injection* vector by escaping control
+// characters and newlines, but "%q" does nothing about *length*. Without
+// this cap, a forged token with e.g. a multi-megabyte "sub" claim would
+// sail through Middleware's exp check (which doesn't look at sub at all)
+// and blow up every audit log line for that request.
+const identityMaxRunes = 128
+
 // Identity returns a best-effort human-readable identity for audit
 // logging, pulled from whichever recognized claim is present. It never
 // returns the token itself, and it deliberately does not fall back to
 // dumping the whole raw claim set, since we don't control what Feegow puts
-// in there.
+// in there. The result is capped at identityMaxRunes runes (with a
+// trailing ellipsis when truncated) regardless of how long the underlying
+// claim value is — see identityMaxRunes.
 func (c *Claims) Identity() string {
 	if c == nil {
 		return "unknown"
@@ -106,17 +120,38 @@ func (c *Claims) Identity() string {
 	for _, key := range identityClaimKeys {
 		if v, ok := c.Raw[key]; ok {
 			if s, ok := v.(string); ok && s != "" {
-				return s
+				return truncateIdentity(s)
 			}
 		}
 	}
 	return "unknown"
 }
 
+// truncateIdentity caps s at identityMaxRunes runes, appending an ellipsis
+// when it had to cut. It truncates on runes rather than bytes so a
+// multi-byte UTF-8 character straddling the cut point is never split into
+// invalid UTF-8.
+func truncateIdentity(s string) string {
+	r := []rune(s)
+	if len(r) <= identityMaxRunes {
+		return s
+	}
+	return string(r[:identityMaxRunes]) + "…"
+}
+
 // auditLog is the seam tests use to capture (and assert the absence of any
 // token in) the audit log line emitted on a successful auth. It defers to
 // the standard log package, matching this service's plain stdlib logging
 // elsewhere.
+//
+// It is gated by loglevel.Verbose(): LOG_LEVEL other than "DEBUG"/"INFO"
+// (the default) silences this line entirely. That gate is a verbosity
+// knob only — the identity value logged is already bounded and escaped
+// (see Identity and the "%q" verb callers use), so silencing it is about
+// noise, not safety.
 func auditLog(format string, args ...any) {
+	if !loglevel.Verbose() {
+		return
+	}
 	log.Printf(format, args...)
 }

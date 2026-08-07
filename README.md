@@ -70,7 +70,8 @@ Env vars:
 | Variable | Default | Para quê |
 | --- | --- | --- |
 | `PORT` | `8087` | porta HTTP |
-| `LOG_LEVEL` | `INFO` | verbosidade (logado no startup) |
+| `LOG_LEVEL` | `INFO` | verbosidade — `DEBUG`/`INFO` (ou vazio) habilitam o log de auditoria (`internal/auth`) e o log de request por chamada à Feegow (`internal/feegow`); qualquer outro valor silencia os dois (ver `internal/loglevel`) |
+| `FEEGOW_HOST_OVERRIDE` | _(vazio)_ | quando setado, redireciona **todos** os quatro hosts da Feegow (ver `internal/feegow`) para este valor — só teste/CI |
 
 ## Testing
 
@@ -88,13 +89,27 @@ and, at the auth layer, for Feegow itself).
 
 - `internal/auth` — bearer-token extraction, fail-closed HTTP middleware,
   context plumbing, JWT payload decode (`exp` check + audit identity).
+- `internal/feegow` — the normalization layer this service exists for (see
+  `ESPECIFICACAO.md` §5): a multi-host client for the Feegow API whose
+  public surface always speaks one convention (ISO-8601 dates,
+  limit/offset pagination with true offset semantics) no matter how many
+  conventions the underlying endpoint actually uses. The translation table
+  is `Registry` (`internal/feegow/registry.go`), an executable map keyed by
+  a stable `EndpointID` — see the package doc comment for the full design.
+  `docs/feegow-api.md` is generated from `Registry`
+  (`internal/feegow/docgen.go`); `docgen_test.go` fails the build if the
+  two drift apart.
+- `internal/loglevel` — makes `LOG_LEVEL` control something real (shared by
+  `internal/auth`'s audit log and `internal/feegow`'s request log).
 - `internal/mcpserver` — the only package that talks to
   `github.com/modelcontextprotocol/go-sdk/mcp`: the two profiles
   (atendimento/admin), their tool registration points, and the
   streamable-HTTP handlers (stateless mode — see the doc comment on
   `newStreamableHandler` for why that's load-bearing, not a preference).
 - `main.go` — process wiring: HTTP server, routing, graceful shutdown.
+- `docs/feegow-api.md` — the normalization contract as a table, generated
+  from `internal/feegow.Registry`.
 
 Not yet present (later phases, see `ESPECIFICACAO.md` §12):
-`internal/feegow` (client + normalization), `internal/tools` (pure tool
-logic), any actual tool, `Dockerfile`, release workflow.
+`internal/tools` (pure tool logic), any actual tool, `Dockerfile`, release
+workflow.
