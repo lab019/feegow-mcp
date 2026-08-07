@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/lab019/feegow-mcp/internal/auth"
@@ -58,6 +59,31 @@ func captureLog(t *testing.T) *bytes.Buffer {
 }
 
 func intPtr(n int) *int { return &n }
+
+// assertNoPIIInLog is the shared machinery every admin tool's "no PII in
+// logs" regression test in this package routes through: stand up mux as a
+// fake Feegow, run call against a client built from it while capturing
+// everything the process logs (via captureLog), then fail if any planted
+// marker in markers survived into the log output. Introduced so the seven
+// admin tools that read or write address/RG/CPF/convênio-shaped data
+// (originally only consultar_paciente_clinico had this net —
+// TestConsultarPacienteClinico_NoPIIInLogs) can each get the same
+// regression coverage without six near-identical copies of that test's
+// body.
+func assertNoPIIInLog(t *testing.T, mux *http.ServeMux, markers []string, call func(client *feegow.Client) error) {
+	t.Helper()
+	buf := captureLog(t)
+	client := newTestClient(t, mux)
+	if err := call(client); err != nil {
+		t.Fatalf("tool call failed: %v", err)
+	}
+	logged := buf.String()
+	for _, m := range markers {
+		if strings.Contains(logged, m) {
+			t.Fatalf("log output leaked PII marker %q: %s", m, logged)
+		}
+	}
+}
 
 // decodeJSONBody decodes a POST request's JSON body into out — used by the
 // write-tool tests to assert on the exact wire payload a Feegow write

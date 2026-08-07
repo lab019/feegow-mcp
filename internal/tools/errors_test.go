@@ -65,3 +65,23 @@ func TestSanitizeFeegowError_PassesOtherErrorsThrough(t *testing.T) {
 		t.Fatalf("SanitizeFeegowError(*InternalError) = %v, want unchanged %v", got, internal)
 	}
 }
+
+// TestCheckEnvelopeNoneSuccess is the unit-level regression test for item
+// (a) of the adversarial review: an EnvelopeNone endpoint's success:false
+// never becomes a feegow.ConflictError (there is no HTTP-level signal to
+// key off — the whole response is HTTP 200), so nothing upstream of
+// checkEnvelopeNoneSuccess itself can catch it. Before this function
+// existed, gerar_senha_atendimento skipped the check entirely (silent
+// false success) and anexar_ao_prontuario hand-rolled its own check that
+// interpolated Feegow's raw free-text body — this proves the shared choke
+// point returns the fixed, PII-free sentinel on false and nil on true,
+// with nothing else in between for a caller to accidentally reintroduce.
+func TestCheckEnvelopeNoneSuccess(t *testing.T) {
+	if err := checkEnvelopeNoneSuccess(true); err != nil {
+		t.Fatalf("checkEnvelopeNoneSuccess(true) = %v, want nil", err)
+	}
+	err := checkEnvelopeNoneSuccess(false)
+	if !errors.Is(err, ErrOperacaoNaoConfirmadaFeegow) {
+		t.Fatalf("checkEnvelopeNoneSuccess(false) = %v, want ErrOperacaoNaoConfirmadaFeegow", err)
+	}
+}

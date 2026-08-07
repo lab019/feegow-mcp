@@ -15,24 +15,46 @@ import (
 // because every one of them is a caller-input problem (an *ArgumentError),
 // not something specific to any single endpoint's wire shape.
 
-// requireConfirmacaoPaciente enforces guard 5: every write this profile
-// exposes requires an explicit boolean confirmation before it is allowed to
-// act. It is deliberately checked first, ahead of every other guard in each
-// tool — an unconfirmed call should never leak *any* information about
-// which other argument was wrong, since the caller had no business asking
-// Feegow anything yet.
+// requireConfirmacao enforces guard 5 for a write tool, on EITHER profile:
+// an explicit boolean confirmation is required before any Feegow mutating
+// call, checked first, ahead of every other guard — an unconfirmed call
+// should never leak *any* information about which other argument was
+// wrong, since the caller had no business asking Feegow anything yet.
 //
-// The bool is confirmation from the PACIENTE (the human on the other end of
-// this public, unauthenticated channel — see IdentidadeArgs' doc comment),
-// never confirmation manufactured by the calling agent/model itself; each
-// tool's jsonschema description says so explicitly.
-func requireConfirmacaoPaciente(confirmed bool, tool string) error {
+// whoConfirms names, in Portuguese, who that confirmation must actually
+// come from — the human on the other end of THIS tool's conversation, never
+// confirmation manufactured by the calling agent/model itself. Which human
+// that is differs by profile: on the public, unauthenticated atendimento
+// channel it is the paciente (see IdentidadeArgs' doc comment); on the
+// private, Feegow-token-authenticated admin channel it is the clínica's own
+// operador (see registerAdminOnlyTools' package doc in internal/mcpserver).
+// Generalized here, instead of two near-identical guards, so both profiles
+// share one implementation instead of drifting apart by hand.
+func requireConfirmacao(confirmed bool, tool, whoConfirms string) error {
 	if !confirmed {
 		return &ArgumentError{Msg: fmt.Sprintf(
-			"%s exige confirmacao_paciente=true — a confirmação precisa vir do paciente na conversa, "+
-				"nunca ser assumida pelo agente", tool)}
+			"%s exige confirmação explícita — ela precisa vir do(a) %s na conversa, "+
+				"nunca ser assumida pelo agente", tool, whoConfirms)}
 	}
 	return nil
+}
+
+// requireConfirmacaoPaciente is requireConfirmacao specialized for the
+// atendimento profile's confirmacao_paciente argument — kept as a named
+// wrapper (rather than inlining "paciente" at every call site) since every
+// atendimento write tool already calls it by this name.
+func requireConfirmacaoPaciente(confirmed bool, tool string) error {
+	return requireConfirmacao(confirmed, tool, "paciente")
+}
+
+// requireConfirmacaoOperador is requireConfirmacao specialized for the
+// admin profile's confirmacao argument: the confirmation must come from the
+// clínica's own operador (the human running this admin tool), never from
+// the paciente (who has no part in this private, staff-facing channel — see
+// this file's package doc and ESPECIFICACAO.md §3 on why the admin profile
+// applies none of atendimento's public-channel restrictions).
+func requireConfirmacaoOperador(confirmed bool, tool string) error {
+	return requireConfirmacao(confirmed, tool, "operador da clínica")
 }
 
 // validateAgendamentoID enforces that a caller-supplied agendamento_id is at

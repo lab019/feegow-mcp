@@ -1,6 +1,9 @@
 package tools
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // onlyDigits strips everything but ASCII digits from s. Every doc.txt
 // example of a CPF or phone filter (cpf=22222222222, telefone=2155554321)
@@ -16,6 +19,28 @@ func onlyDigits(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// argumentDigitsField validates a caller-supplied field that must reduce to
+// at least one digit via onlyDigits before it is usable on the wire. Two
+// cases are NOT the same and must not be conflated:
+//
+//   - The caller didn't send this field at all (raw == "") — a normal,
+//     silent no-op in a partial PATCH like atualizar_paciente, per its own
+//     "send if set" contract.
+//   - The caller DID send something, but it reduces to no digits at all
+//     (e.g. cpf: "não sei") — a caller mistake, not a field to quietly
+//     drop. Dropping it silently would make a result like
+//     {"atualizado":true} lie about which of the caller's fields actually
+//     made it into the request; rejecting it here means the caller finds
+//     out about the mistake, instead of an operador believing a field was
+//     saved that Feegow never even received.
+func argumentDigitsField(field, raw string) (string, error) {
+	digits := onlyDigits(raw)
+	if raw != "" && digits == "" {
+		return "", &ArgumentError{Msg: fmt.Sprintf("%s não contém nenhum dígito válido: %q", field, raw)}
+	}
+	return digits, nil
 }
 
 // normalizeName folds a full name for comparison: trims, collapses internal

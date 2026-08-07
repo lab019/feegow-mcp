@@ -107,9 +107,10 @@ func registerAtendimentoTools(s *mcp.Server, client *feegow.Client) {
 // rather than something that can drift out of sync by hand.
 func registerAdminTools(s *mcp.Server, client *feegow.Client) {
 	registerAtendimentoTools(s, client)
-	// Fase 4: tools exclusivas do perfil admin (financeiro, estoque,
-	// propostas, laudos, faturamento, relatórios, funcionários, escritas de
-	// cartão de benefício).
+	// Fase 4a: superfície de paciente e agenda exclusiva do perfil admin
+	// (ver tools_admin.go). Financeiro, estoque, propostas, laudos,
+	// faturamento, relatórios e funcionários ficam para a Fase 4b.
+	registerAdminOnlyTools(s, client)
 }
 
 // newStreamableHandler wraps an *mcp.Server in the SDK's streamable-HTTP
