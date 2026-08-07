@@ -166,6 +166,19 @@ type EndpointDescriptor struct {
 	Pagination PaginationSpec
 	Envelope   EnvelopeKind
 
+	// MaxRangeMonths declares the widest Start–End window (in calendar
+	// months) this endpoint tolerates before Feegow itself rejects the
+	// request. Zero (the default) means no client-enforced limit. This
+	// exists specifically for /appoints/search, whose real, undocumented
+	// behavior (confirmed by the Fase 0 smoke test — see ESPECIFICACAO.md
+	// Fase 0 RELATORIO.md item a.4) is a 409 "Intervalo de data deve ser
+	// menor que 6 meses." for any wider window. Declared on the
+	// descriptor — not hard-coded to an endpoint ID — so
+	// validateDateRange (dates.go) stays as data-driven as applyDates and
+	// EncodePagination: any future endpoint that turns out to share this
+	// limit gets the same client-side guard for free.
+	MaxRangeMonths int
+
 	// Verified is false when doc.txt did not give this endpoint's
 	// translation with enough clarity to trust without a real-license
 	// smoke test (ESPECIFICACAO.md §0/§8). An unverified descriptor is
@@ -176,7 +189,8 @@ type EndpointDescriptor struct {
 
 	// Notes is free text surfaced in docs/feegow-api.md: known doc bugs,
 	// why something is unverified, naming quirks tools built on top of
-	// this endpoint need to know about (e.g. "hora" vs "horario" — see
+	// this endpoint need to know about (e.g. the "tipo" field documented
+	// as numeric but really "E"/"P" on /appoints/available-schedule — see
 	// ESPECIFICACAO.md §7.5). Mandatory when Verified is false.
 	Notes string
 }
@@ -221,6 +235,10 @@ func (d EndpointDescriptor) Validate() error {
 	}
 	if seenRoles[DateRoleSingle] && (seenRoles[DateRoleStart] || seenRoles[DateRoleEnd]) {
 		return fmt.Errorf("%s: declares DateRoleSingle alongside a Start/End range, which is not a shape any real Feegow endpoint has", d.ID)
+	}
+
+	if d.MaxRangeMonths < 0 {
+		return fmt.Errorf("%s: MaxRangeMonths must not be negative, got %d", d.ID, d.MaxRangeMonths)
 	}
 
 	switch d.Pagination.Kind {

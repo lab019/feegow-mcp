@@ -157,6 +157,96 @@ func TestCall_422ValidationError_Distinguishable(t *testing.T) {
 	}
 }
 
+// TestCall_422RouteNotFound_Distinguishable proves the "impressão digital"
+// the Fase 0 smoke test found — HTTP 422 with an EMPTY "message" in
+// {"success":false,"cod_erro":0,"message":""} — is classified as a
+// *RouteNotFoundError, never as a *ValidationError. Confusing the two
+// would send an agent off "revising" input that was never the problem
+// (see RouteNotFoundError's doc comment).
+func TestCall_422RouteNotFound_Distinguishable(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/appoints/new-appoint", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusUnprocessableEntity, `{"success":false,"cod_erro":0,"message":""}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.Client(), srv.URL)
+	_, err := c.Call(ctxWithToken("tok"), "appoints.new_appoint", Request{})
+	if err == nil {
+		t.Fatal("Call: got nil error, want a RouteNotFoundError")
+	}
+
+	var notFound *RouteNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("error is not a *RouteNotFoundError: %v (%T)", err, err)
+	}
+
+	var validationErr *ValidationError
+	if errors.As(err, &validationErr) {
+		t.Fatalf("empty-message 422 also matched *ValidationError — the two must be distinguishable")
+	}
+}
+
+// TestCall_422RouteNotFound_LogsWarning proves the RouteNotFoundError path
+// is treated as an operational failure worth an operator's attention (like
+// an unrecognized shape already is) rather than passing silently.
+func TestCall_422RouteNotFound_LogsWarning(t *testing.T) {
+	t.Setenv("LOG_LEVEL", "") // explicit default, so WarnEnabled() can't be off via inherited env
+	buf := captureLog(t)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/appoints/new-appoint", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusUnprocessableEntity, `{"success":false,"cod_erro":0,"message":""}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.Client(), srv.URL)
+	_, err := c.Call(ctxWithToken("tok"), "appoints.new_appoint", Request{})
+	if err == nil {
+		t.Fatal("Call: got nil error, want a RouteNotFoundError")
+	}
+
+	if !strings.Contains(buf.String(), "WARN") {
+		t.Fatalf("expected a WARN log line for a route-not-found 422, got: %q", buf.String())
+	}
+}
+
+// TestCall_422MessageStyleValidation proves the OTHER half of the same
+// wire shape — {"success":false,"cod_erro":N,"message":"<non-empty>"} — is
+// a real validation error (e.g. "The GET method is not supported..."),
+// classified as *ValidationError with Message populated, not as a
+// *RouteNotFoundError.
+func TestCall_422MessageStyleValidation(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/medical-reports/create", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusUnprocessableEntity,
+			`{"success":false,"cod_erro":0,"message":"The GET method is not supported for this route. Supported methods: POST."}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.Client(), srv.URL)
+	_, err := c.Call(ctxWithToken("tok"), "medical_reports.create", Request{})
+	if err == nil {
+		t.Fatal("Call: got nil error, want a ValidationError")
+	}
+
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("error is not a *ValidationError: %v (%T)", err, err)
+	}
+	if !strings.Contains(validationErr.Message, "GET method is not supported") {
+		t.Fatalf("ValidationError.Message = %q, want it to contain the real Feegow message", validationErr.Message)
+	}
+
+	var notFound *RouteNotFoundError
+	if errors.As(err, &notFound) {
+		t.Fatalf("non-empty-message 422 also matched *RouteNotFoundError — the two must be distinguishable")
+	}
+}
+
 // TestCall_403_CredentialInactive_NotPermissionMessage is acceptance
 // criterion 6: 403 must read as "credencial inativa, recadastre", never
 // as a permission problem — the exact inversion ESPECIFICACAO.md §5 warns
@@ -489,7 +579,12 @@ func TestCall_POSTSendsJSONBody(t *testing.T) {
 	c := New(srv.Client(), srv.URL)
 	date := "2018-08-08"
 	_, err := c.Call(ctxWithToken("tok"), "appoints.new_appoint", Request{
-		Params: map[string]any{"paciente_id": float64(5), "hora": "15:00:00"},
+		// "horario" (not "hora" — see appoints.new_appoint's Registry Notes
+		// and Fase 0 RELATORIO.md item a.7): Params passes through
+		// whatever key a caller sends verbatim, so this only proves
+		// passthrough, but it's worth using the field's real, confirmed
+		// name rather than the doc's wrong one.
+		Params: map[string]any{"paciente_id": float64(5), "horario": "15:00:00"},
 		Date:   &date,
 	})
 	if err != nil {
@@ -502,7 +597,72 @@ func TestCall_POSTSendsJSONBody(t *testing.T) {
 	if gotBody["data"] != "08-08-2018" {
 		t.Fatalf(`body["data"] = %v, want "08-08-2018"`, gotBody["data"])
 	}
-	if gotBody["hora"] != "15:00:00" {
-		t.Fatalf(`body["hora"] = %v, want "15:00:00"`, gotBody["hora"])
+	if gotBody["horario"] != "15:00:00" {
+		t.Fatalf(`body["horario"] = %v, want "15:00:00"`, gotBody["horario"])
+	}
+}
+
+// TestCall_DateRangeTooWide_RejectedBeforeRequest is the client-level half
+// of the /appoints/search 6-month guard the Fase 0 smoke test confirmed
+// against the real API (409 "Intervalo de data deve ser menor que 6
+// meses."): a window wider than MaxRangeMonths must be rejected as a
+// *DateRangeTooWideError BEFORE any HTTP request is built — the handler
+// below fails the test if it's ever reached, proving the rejection really
+// happens client-side, not just that the error type happens to match.
+func TestCall_DateRangeTooWide_RejectedBeforeRequest(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/appoints/search", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("request reached the server — the too-wide window must be rejected before any HTTP call")
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.Client(), srv.URL)
+	start := "2024-01-01"
+	end := "2026-12-31" // 3 years — well past the 6-month limit
+	_, err := c.Call(ctxWithToken("tok"), "appoints.search", Request{
+		DateStart: &start,
+		DateEnd:   &end,
+	})
+	if err == nil {
+		t.Fatal("Call: got nil error, want a DateRangeTooWideError")
+	}
+
+	var rangeErr *DateRangeTooWideError
+	if !errors.As(err, &rangeErr) {
+		t.Fatalf("error is not a *DateRangeTooWideError: %v (%T)", err, err)
+	}
+	if rangeErr.MaxRangeMonths != 6 {
+		t.Fatalf("MaxRangeMonths = %d, want 6", rangeErr.MaxRangeMonths)
+	}
+	if !strings.Contains(err.Error(), "6 meses") {
+		t.Fatalf("error message %q does not mention the actual limit in a readable way", err.Error())
+	}
+}
+
+// TestCall_DateRangeWithinLimit_ReachesServer is the positive control: a
+// window at or within MaxRangeMonths must NOT be rejected client-side.
+func TestCall_DateRangeWithinLimit_ReachesServer(t *testing.T) {
+	called := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("/appoints/search", func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		writeJSON(t, w, http.StatusOK, `{"success":true,"content":[]}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.Client(), srv.URL)
+	start := "2026-01-01"
+	end := "2026-03-01" // 2 months — within the 6-month limit
+	_, err := c.Call(ctxWithToken("tok"), "appoints.search", Request{
+		DateStart: &start,
+		DateEnd:   &end,
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if !called {
+		t.Fatal("request never reached the server — a within-limit window must not be rejected")
 	}
 }

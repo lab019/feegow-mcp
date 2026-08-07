@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -111,6 +112,10 @@ func (c *Client) Call(ctx context.Context, id EndpointID, req Request) (*Respons
 		return nil, fmt.Errorf("feegow: no bearer token in context — refusing to call Feegow (fail-closed)")
 	}
 
+	if err := validateDateRange(d, req); err != nil {
+		return nil, err
+	}
+
 	wire := make(map[string]any, len(req.Params)+4)
 	for k, v := range req.Params {
 		wire[k] = v
@@ -147,7 +152,20 @@ func (c *Client) Call(ctx context.Context, id EndpointID, req Request) (*Respons
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, classifyError(httpResp.StatusCode, body)
+		callErr := classifyError(httpResp.StatusCode, body)
+		// A RouteNotFoundError means THIS SERVICE built a request against a
+		// path/method Feegow doesn't recognize — an integration bug, not a
+		// caller-supplied bad value (see RouteNotFoundError's doc comment
+		// in errors.go). That is worth an operator's attention the same
+		// way an unrecognized response shape already is elsewhere in this
+		// package, so it gets the same treatment: a WARN line with only
+		// method+path (never the query string or body — see the Verbose
+		// log line above for why), gated the same way.
+		var notFound *RouteNotFoundError
+		if errors.As(callErr, &notFound) && loglevel.WarnEnabled() {
+			log.Printf("feegow: WARN %s %s%s respondeu 422 com corpo vazio — rota/método provavelmente inexistente (erro de integração, não de input do usuário)", d.Method, string(d.Host), d.Path)
+		}
+		return nil, callErr
 	}
 	return parseSuccess(body, d.Envelope)
 }
@@ -244,14 +262,7 @@ func classifyError(status int, body []byte) error {
 		return &ConflictError{Content: string(body)}
 
 	case http.StatusUnprocessableEntity:
-		// {"paciente_id": ["validation.required"]} — a BARE map, no
-		// envelope at all. If it doesn't parse that way, this isn't the
-		// 422 shape doc.txt documents; don't guess.
-		var fields map[string][]string
-		if err := json.Unmarshal(body, &fields); err != nil {
-			return &UnexpectedStatusError{StatusCode: status}
-		}
-		return &ValidationError{Fields: fields}
+		return classify422(body)
 
 	default:
 		if status >= 500 {
@@ -260,6 +271,39 @@ func classifyError(status int, body []byte) error {
 		// ESPECIFICACAO.md §5: no 404, no 429 in the documented contract.
 		return &UnexpectedStatusError{StatusCode: status}
 	}
+}
+
+// classify422 tells apart the two shapes a 422 arrives in (see
+// ValidationError and RouteNotFoundError's doc comments in errors.go),
+// confirmed against the real API by the Fase 0 smoke test:
+//
+//  1. {"campo": ["mensagem", ...], ...} — a bare Laravel-style map, no
+//     envelope. A real per-field validation failure.
+//  2. {"success": false, "cod_erro": N, "message": "..."} — used for
+//     BOTH a real error with a human-readable message (e.g. "The GET
+//     method is not supported for this route...") AND, with an EMPTY
+//     message, as the fingerprint of a route/method that does not exist
+//     at all: this API answers a wrong path with 422, not 404.
+//
+// Anything that matches neither shape falls back to UnexpectedStatusError
+// rather than guessing.
+func classify422(body []byte) error {
+	var fields map[string][]string
+	if err := json.Unmarshal(body, &fields); err == nil && len(fields) > 0 {
+		return &ValidationError{Fields: fields}
+	}
+
+	var env struct {
+		Message *string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &env); err == nil && env.Message != nil {
+		if strings.TrimSpace(*env.Message) == "" {
+			return &RouteNotFoundError{}
+		}
+		return &ValidationError{Message: *env.Message}
+	}
+
+	return &UnexpectedStatusError{StatusCode: http.StatusUnprocessableEntity}
 }
 
 // parseSuccess unwraps a 200 response body per kind.

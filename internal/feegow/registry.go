@@ -39,10 +39,21 @@ var Registry = map[EndpointID]EndpointDescriptor{
 			LimitParam:  "offset", // Feegow's "offset" query param is the page size.
 			OffsetParam: "start",  // Feegow's "start" query param is the real deslocamento.
 		},
-		Envelope: EnvelopeStandard,
-		Verified: true,
-		Notes: "Paginação só liga quando list_procedures=1 é usado (doc.txt); " +
-			"fora isso start/offset são aceitos mas não paginam de fato. Ver ESPECIFICACAO.md §5.",
+		// Confirmed by the Fase 0 smoke test: a window of data_start=
+		// 01-01-2024 to data_end=31-12-2026 (3 years) returns 409
+		// "Intervalo de data deve ser menor que 6 meses." — undocumented
+		// in doc.txt. validateDateRange (dates.go) turns this into a
+		// DateRangeTooWideError before the request ever leaves this
+		// process, instead of a caller-facing 409 sanitized down to an
+		// opaque "houve um conflito" (see tools.SanitizeFeegowError).
+		MaxRangeMonths: 6,
+		Envelope:       EnvelopeStandard,
+		Verified:       true,
+		Notes: "Paginação (start/offset) só foi observada com list_procedures=1 nos testes manuais " +
+			"originais; a Fase 0 tentou isolar isso com uma janela válida (01-01-2026 a 01-03-2026) " +
+			"mas a sandbox não tinha agendamentos nessa janela — o campo \"total\" apareceu com E sem " +
+			"list_procedures=1, então a alegação \"paginação só liga com list_procedures=1\" não pôde " +
+			"ser confirmada nem refutada. Ver ESPECIFICACAO.md §5 e Fase 0 RELATORIO.md item a.4.",
 	},
 
 	"appoints.available_schedule": {
@@ -103,9 +114,23 @@ var Registry = map[EndpointID]EndpointDescriptor{
 		},
 		Envelope: EnvelopeStandard,
 		Verified: true,
-		Notes: "Campo de horário se chama \"hora\" aqui (em /appoints/reschedule é \"horario\" — " +
-			"ver ESPECIFICACAO.md §7.5). Guarda de negócio \"sem agendamento retroativo\" e a regra " +
-			"condicional valor/plano são responsabilidade da tool (Fase 3), não deste client.",
+		Notes: "Campo de horário se chama \"horario\" (confirmado pela Fase 0: enviar \"hora\", como a " +
+			"tabela de parâmetros de doc.txt sugere, gera 422 {\"horario\":[...]} — \"hora\" é ignorado " +
+			"pela API). O mesmo campo \"horario\" é usado em /appoints/reschedule; não são nomes " +
+			"diferentes, era um artefato de erro da doc (ESPECIFICACAO.md §7.5 e Fase 0 RELATORIO.md " +
+			"item a.7/c.5). Guarda de negócio \"sem agendamento retroativo\" é responsabilidade da " +
+			"tool (Fase 3), não deste client — confirmado 422 {\"data\":[\"...posterior ou igual a " +
+			"today\"]} para data retroativa.\n" +
+			"Duas regras de negócio descobertas pela Fase 0, NÃO implementadas por este client " +
+			"(responsabilidade da tool de escrita, Fase 3):\n" +
+			"  1. \"plano=1\" NÃO exige \"valor=0\" no servidor, apesar do aviso da doc (\"ATENÇÃO: Se " +
+			"plano_id = 1 valor deverá ser 0\") — criado agendamento com plano=1 e valor=9999 sem " +
+			"erro. Sem uma guarda própria da tool, um agendamento de convênio com preço errado entra " +
+			"em silêncio.\n" +
+			"  2. Existe um SEGUNDO 409 não documentado, distinto do \"horário ocupado\": " +
+			"\"Esse paciente já possui um agendamento nessa agenda.\" — dispara quando o MESMO " +
+			"paciente já tem qualquer outro agendamento com o mesmo profissional, independente do " +
+			"horário. A tool de criação precisa distinguir essa mensagem da de horário ocupado.",
 	},
 
 	"appoints.cancel_appoint": {
@@ -129,7 +154,75 @@ var Registry = map[EndpointID]EndpointDescriptor{
 		},
 		Envelope: EnvelopeStandard,
 		Verified: true,
-		Notes:    "Campo de horário se chama \"horario\" aqui, \"hora\" em /appoints/new-appoint.",
+		Notes: "Campo de horário se chama \"horario\" — confirmado ponta a ponta pela Fase 0 " +
+			"(POST com horario=\"16:00:00\" → 200 \"Agendamento remarcado\"). O mesmo nome é usado " +
+			"em /appoints/new-appoint (ver Notes lá): não são dois campos diferentes, era um " +
+			"artefato de erro da doc.",
+	},
+
+	// appoints.confirm ("Confirmar agendamento") is UNDOCUMENTED — found by
+	// the Fase 0 systematic probing of ~40 name/path variations, not in
+	// doc.txt's 85 endpoints. Confirmed end-to-end against the real API:
+	// agendamento_id inexistente → 409 "Agendamento não encontrado" (mesmo
+	// padrão do 409 documentado de /appoints/cancel-appoint); agendamento_id
+	// real (criado nesta sessão) → 200 "Agendamento confirmado com
+	// sucesso". A variante kebab-case "confirm-appoint" NÃO existe (bate o
+	// fingerprint de rota ausente — ver RouteNotFoundError). Perfil:
+	// atendimento (confirmar consulta é fluxo central do paciente).
+	// Registrado aqui para a Fase 3 não precisar redescobrir o contrato —
+	// a tool (confirmar_agendamento) NÃO é criada nesta fase, é escrita.
+	"appoints.confirm": {
+		ID:       "appoints.confirm",
+		Host:     HostAPI,
+		Method:   http.MethodPost,
+		Path:     "/appoints/confirm",
+		Envelope: EnvelopeStandard,
+		Verified: true,
+		Notes: "Não documentado em doc.txt — descoberto pela Fase 0. Contrato: " +
+			"{\"agendamento_id\": <int>}. Confirmado ponta a ponta: 200 " +
+			"\"Agendamento confirmado com sucesso\"; com id inexistente, 409 " +
+			"\"Agendamento não encontrado\". Perfil atendimento. Tool ainda não existe — Fase 3.",
+	},
+
+	// The two v2 write/discovery endpoints below were found by the Fase 0
+	// probe under /v1/api/v2/... (the same HostAPI prefix, just with a
+	// "/v2" segment before the group name — no client change needed to
+	// reach them, see Host's doc comment). Both came back with a REAL
+	// validation 422 (named fields, not RouteNotFoundError's empty-message
+	// fingerprint) proving the route exists and confirming its field
+	// names — but neither was exercised end-to-end (no full v2 create, to
+	// avoid multiplying test agendamentos), so Verified stays false and
+	// no DateParams are declared: the exact wire date FORMAT for v2 was
+	// never independently observed, only inferred by field-name match with
+	// v1 — exactly the kind of inference this package's doc comment says
+	// never to make silently.
+	"appoints.new_appoint_v2": {
+		ID:       "appoints.new_appoint_v2",
+		Host:     HostAPI,
+		Method:   http.MethodPost,
+		Path:     "/v2/appoints/new-appoint",
+		Envelope: EnvelopeStandard,
+		Verified: false,
+		Notes: "Não documentado em doc.txt. POST sem corpo → 422 de validação REAL (não o " +
+			"fingerprint de rota ausente) nomeando os campos: local_id, paciente_id, data, horario, " +
+			"valor, plano, procedimento_id, profissional_id — mesmos nomes do v1, inclusive " +
+			"\"horario\" (reforça que new-appoint usa \"horario\", não \"hora\"). Formato de data e " +
+			"envelope de sucesso NÃO confirmados (nenhuma criação completa foi tentada em v2). Sem " +
+			"DateParams aqui de propósito: o formato \"data\" seria inferido por analogia com o v1, " +
+			"não observado — deixado para a Fase 3/4 confirmar antes de modelar.",
+	},
+
+	"appoints.available_schedule_v2": {
+		ID:       "appoints.available_schedule_v2",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/v2/appoints/available-schedule",
+		Envelope: EnvelopeStandard,
+		Verified: false,
+		Notes: "Não documentado em doc.txt. GET sem params → 422 de validação REAL nomeando os " +
+			"campos: tipo, data_start, data_end — mesmos nomes do v1. Formato de data e envelope de " +
+			"sucesso NÃO confirmados. Sem DateParams aqui pelo mesmo motivo que " +
+			"appoints.new_appoint_v2: formato não observado diretamente em v2.",
 	},
 
 	// --- Bloqueios (api.feegow.com/v1/api) ------------------------------
@@ -155,8 +248,15 @@ var Registry = map[EndpointID]EndpointDescriptor{
 		Verified: false,
 		Notes: "doc.txt contradiz a si mesmo: a tabela de parâmetros diz DD-MM-YYYY, mas o " +
 			"exemplo de request/response usa YYYY-MM-DD (\"date_start\": \"2023-05-10\"). " +
-			"Implementado como YYYY-MM-DD (bate com o exemplo e com ESPECIFICACAO.md §5), mas " +
-			"precisa do smoke test da Fase 0 antes de virar tool.",
+			"Implementado como YYYY-MM-DD (bate com o exemplo e com ESPECIFICACAO.md §5). " +
+			"Fase 0 tentou o smoke test contra a API real e ficou INCONCLUSIVO por falta de dados: " +
+			"a sandbox não tem nenhum bloqueio cadastrado (não há endpoint de criação de bloqueio " +
+			"entre os 85 documentados), então tanto date_start=10-05-2023&date_end=29-05-2023 " +
+			"(DD-MM-YYYY) quanto date_start=2023-05-10&date_end=2023-05-29 (YYYY-MM-DD) devolveram " +
+			"200 com content:[] — nenhum dos dois formatos gerou erro, mas nenhum retornou registro " +
+			"para provar qual filtro realmente funciona. O que a Fase 0 CONFIRMOU: date_start e " +
+			"date_end são obrigatórios JUNTOS (422 {\"date_start\":[...],\"date_end\":[...]} quando " +
+			"ambos ausentes), apesar da doc marcá-los como opcionais \"com bloqueio_id\".",
 	},
 
 	// --- Pacientes (api.feegow.com/v1/api) ------------------------------
@@ -257,6 +357,61 @@ var Registry = map[EndpointID]EndpointDescriptor{
 		Notes:    "data_nascimento já chega em yyyy-mm-dd — sem tradução necessária.",
 	},
 
+	// patient.edit_v2 is UNDOCUMENTED — found under the /v2 prefix (see
+	// appoints.new_appoint_v2's comment on why no Host change is needed).
+	// Only POST works: PUT on the same path was tried and rejected with
+	// an explicit "The PUT method is not supported for this route.
+	// Supported methods: POST." (the real-error 422 shape, not
+	// RouteNotFoundError's empty-message fingerprint — proves the route
+	// exists under POST).
+	"patient.edit_v2": {
+		ID:       "patient.edit_v2",
+		Host:     HostAPI,
+		Method:   http.MethodPost,
+		Path:     "/v2/patient/edit",
+		Envelope: EnvelopeStandard,
+		Verified: false,
+		Notes: "Não documentado em doc.txt. POST sem corpo → 422 real nomeando só \"paciente_id\" " +
+			"como obrigatório. PUT no mesmo path → 422 real \"The PUT method is not supported... " +
+			"Supported methods: POST.\", confirmando que só POST é aceito. Contrato além de " +
+			"paciente_id (quais campos são editáveis, formato de datas) NÃO confirmado — nenhuma " +
+			"edição completa foi tentada em v2.",
+	},
+
+	// medical_record.timeline ("Prontuário: Linha do tempo") is
+	// UNDOCUMENTED — found by the Fase 0 probe. Confirmed end-to-end:
+	// GET ?paciente_id=3 → 200, envelope padrão {success, content} com
+	// content:[] (paciente de teste sem histórico). Perfil: admin
+	// (prontuário) — fora do escopo do perfil atendimento.
+	"medical_record.timeline": {
+		ID:       "medical_record.timeline",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/medical-record/timeline",
+		Envelope: EnvelopeStandard,
+		Verified: true,
+		Notes:    "Não documentado em doc.txt — descoberto pela Fase 0. Perfil admin (prontuário).",
+	},
+
+	// patient.check_eligibility ("Verificar elegibilidade do paciente") is
+	// UNDOCUMENTED — found by the Fase 0 probe. Confirmed end-to-end: GET
+	// ?paciente_id=3 → 200, corpo {"success": true, "elegivel": false,
+	// "term": null} — SEM o envelope {success,content} padrão (é
+	// EnvelopeNone: os campos success/elegivel/term vêm soltos no corpo).
+	// Perfil: admin.
+	"patient.check_eligibility": {
+		ID:       "patient.check_eligibility",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/patient/check-eligibility",
+		Envelope: EnvelopeNone,
+		Verified: true,
+		Notes: "Não documentado em doc.txt — descoberto pela Fase 0. Resposta é " +
+			"{\"success\": bool, \"elegivel\": bool, \"term\": ...} — NÃO usa o envelope padrão " +
+			"{success,content} (por isso EnvelopeNone aqui, apesar de ter um campo \"success\"). " +
+			"Perfil admin.",
+	},
+
 	// --- Empresa (api.feegow.com/v1/api) --------------------------------
 	"company.list_unity": {
 		ID:       "company.list_unity",
@@ -273,6 +428,18 @@ var Registry = map[EndpointID]EndpointDescriptor{
 		Path:     "/company/list-local",
 		Envelope: EnvelopeStandard,
 		Verified: true,
+	},
+
+	// company.list_unity_v2 is UNDOCUMENTED — found under the /v2 prefix.
+	// Fully confirmed: GET → 200, mesmo shape (matriz/unidades) do v1.
+	"company.list_unity_v2": {
+		ID:       "company.list_unity_v2",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/v2/company/list-unity",
+		Envelope: EnvelopeStandard,
+		Verified: true,
+		Notes:    "Não documentado em doc.txt. Confirma que o prefixo v2 existe e reaproveita o endpoint v1 (mesmo shape de resposta).",
 	},
 
 	// --- Especialidades / Convênios (api.feegow.com/v1/api) -------------
@@ -368,11 +535,15 @@ var Registry = map[EndpointID]EndpointDescriptor{
 			OffsetParam: "page",
 		},
 		Envelope: EnvelopeNone,
-		Verified: false,
-		Notes: "initialDate/endDate: doc.txt só diz \"string\", sem formato — não modelado como " +
-			"DateParam aqui (não deduzido por analogia com outros campos ISO da API). Doc bug " +
-			"conhecido (ESPECIFICACAO.md §8): \"perPage padrão é 1\" no texto, mas o exemplo usa " +
-			"10. Precisa de smoke test da Fase 0 antes de virar tool.",
+		Verified: true,
+		Notes: "Paginação (page/perPage) CONFIRMADA pela Fase 0: enviados page=1&perPage=10, " +
+			"ecoados de volta corretamente em page/perPage/pages na resposta, e listados em " +
+			"foundParameters. initialDate/endDate seguem INCONCLUSIVOS: testado sem data, com " +
+			"YYYY-MM-DD e com DD-MM-YYYY — as três chamadas voltaram 200 com a mesma resposta vazia " +
+			"(count:0, sandbox sem contratos cadastrados); nenhum formato gerou erro, mas nenhum " +
+			"prova qual (se algum) é o certo — por isso continuam não modelados como DateParam aqui " +
+			"(não deduzido por analogia com outros campos ISO da API). Doc bug conhecido " +
+			"(ESPECIFICACAO.md §8): \"perPage padrão é 1\" no texto, mas o exemplo usa 10.",
 	},
 
 	"benefit.plan_datagrid": {
@@ -397,14 +568,77 @@ var Registry = map[EndpointID]EndpointDescriptor{
 		Method:   http.MethodPost,
 		Path:     "/financial2/external/financial-stock/location/list",
 		Envelope: EnvelopeNone,
+		Verified: false,
+		Notes: "INACESSÍVEL neste ambiente, confirmado pela Fase 0: core.feegow.com.br (HostCoreBR) " +
+			"não resolve — erro de conexão (proxy 502 / túnel falhou), o domínio não está servindo " +
+			"tráfego. Só core.feegow.com (sem \".br\") respondeu na varredura, mas o único path " +
+			"testado sob esse host (financial2/external/private-table/list, ver " +
+			"financial.private_table_list) devolveu 404 — não testamos o path de estoque " +
+			"especificamente sob core.feegow.com. Resposta é um array JSON puro (sem qualquer " +
+			"envelope) quando o endpoint responde; único parâmetro é \"unity\" (body). Não trocar o " +
+			"Host para HostCore sem antes confirmar que este path específico existe lá — inferir " +
+			"por analogia seria exatamente o erro que esta Nota existe para evitar.",
+	},
+
+	// --- Laudos (api.feegow.com/v1/api) ---------------------------------
+	//
+	// doc.txt's own worked example for this endpoint uses "GET" (title
+	// says "POST /medical-reports/create", the request example shows
+	// "GET") — one of the doc's known self-contradictions. Confirmed by
+	// the Fase 0 smoke test: GET with the documented params → 422
+	// "The GET method is not supported for this route. Supported
+	// methods: POST." (real-error 422 shape, not RouteNotFoundError).
+	// POST with the same params → 200 (with a bogus agendamento_id=1 the
+	// response body was {"success":false,"message":"..."} — an internal
+	// Feegow error for a nonexistent agendamento, not the {success,
+	// content} envelope; a real success response was not observed, so the
+	// exact success shape is unconfirmed even though method+path are).
+	"medical_reports.create": {
+		ID:       "medical_reports.create",
+		Host:     HostAPI,
+		Method:   http.MethodPost,
+		Path:     "/medical-reports/create",
+		Envelope: EnvelopeStandard,
 		Verified: true,
-		Notes:    "Resposta é um array JSON puro (sem qualquer envelope). Único parâmetro é \"unity\" (body).",
+		Notes: "Doc bug conhecido: o título de doc.txt diz \"POST /medical-reports/create\", mas o " +
+			"exemplo de URL usa GET. Confirmado pela Fase 0: GET → 422 \"The GET method is not " +
+			"supported for this route. Supported methods: POST.\"; POST é aceito (200 com " +
+			"agendamento_id inexistente devolveu {\"success\":false,\"message\":\"...\"} — um erro " +
+			"interno do Feegow para agendamento inexistente, não o envelope {success,content} " +
+			"padrão; uma resposta de sucesso real não foi observada). Method e Path confirmados.",
+	},
+
+	// financial.find_invoice_by_nfse ("Obter invoices por nota fiscal") —
+	// doc.txt documents it as GET with a query param whose name it never
+	// actually spells correctly. Confirmed by the Fase 0 smoke test: GET →
+	// 422 "The GET method is not supported... Supported methods: POST.";
+	// POST with {"numero_nfse": "1"} (the name doc.txt's example URL
+	// implies) → 422 real validation naming "nfse_numero" — the ACTUAL
+	// field name is nfse_numero, not numero_nfse.
+	"financial.find_invoice_by_nfse": {
+		ID:       "financial.find_invoice_by_nfse",
+		Host:     HostAPI,
+		Method:   http.MethodPost,
+		Path:     "/financial/find-invoice-by-nfse-number",
+		Envelope: EnvelopeStandard,
+		Verified: true,
+		Notes: "Doc bug conhecido: doc.txt documenta como GET; confirmado pela Fase 0 que é POST " +
+			"(\"The GET method is not supported for this route. Supported methods: POST.\"). Campo " +
+			"do corpo é \"nfse_numero\" (confirmado por 422 real {\"nfse_numero\":[...]}), NÃO " +
+			"\"numero_nfse\" como o nome do parâmetro na URL de exemplo da doc sugere. Envelope de " +
+			"sucesso assumido {success,content} (padrão do grupo Financeiro), não observado " +
+			"diretamente — só o 422 foi exercitado.",
 	},
 
 	// --- Financeiro (api.feegow.com/v1/api e core.feegow.com) -----------
 	//
 	// The one endpoint ESPECIFICACAO.md calls out as having *real*
-	// limit/offset (true deslocamento) semantics.
+	// limit/offset (true deslocamento) semantics — but see Notes: the
+	// Fase 0 smoke test could not exercise that claim, because the route
+	// itself 404s in this environment. PaginationLimitOffset stays
+	// declared regardless: the *scheme* is a real thing this package
+	// models (patient.list is the other, verified, example of it), this
+	// entry just can no longer vouch for this specific endpoint using it.
 	"financial.dmed": {
 		ID:     "financial.dmed",
 		Host:   HostAPI,
@@ -420,7 +654,15 @@ var Registry = map[EndpointID]EndpointDescriptor{
 			OffsetParam: "offset",
 		},
 		Envelope: EnvelopeStandard,
-		Verified: true,
+		Verified: false,
+		Notes: "ROTA AUSENTE neste ambiente, confirmado pela Fase 0: GET com todos os parâmetros " +
+			"documentados corretos (cpf, dataInicio, dataFim, unidadeId, limit, offset) devolveu " +
+			"404 (HTML, rota não encontrada) tanto com offset=0 quanto offset=1 — não é 403 (sem " +
+			"indício de bloqueio por escopo), parece rota ausente/desativada nesta licença. Não deu " +
+			"pra confirmar nem refutar a alegação de \"offset com deslocamento real\" por isso. " +
+			"PaginationLimitOffset NÃO foi removido do registry: o esquema continua existindo como " +
+			"conceito (patient.list é o outro exemplo dele, esse sim verificado) — só não há mais um " +
+			"endpoint verificado comprovando este uso específico.",
 	},
 
 	"financial.private_table_list": {
@@ -434,9 +676,15 @@ var Registry = map[EndpointID]EndpointDescriptor{
 			OffsetParam: "page",
 		},
 		Envelope: EnvelopeNone,
-		Verified: true,
-		Notes: "Resposta é {page,pages,perPage,data,count} sem campo \"success\". Mesmo caminho " +
-			"\"financial2/external\" que /stock.location_list, sob um TLD diferente " +
+		Verified: false,
+		Notes: "404 REAL confirmado pela Fase 0, não erro de host: core.feegow.com.br (HostCoreBR) " +
+			"nem conecta (erro de conexão), mas core.feegow.com (HostCore, já o host usado aqui) " +
+			"respondeu — com 404 (página HTML genérica, não JSON) neste path exato, mesmo com os " +
+			"parâmetros corretos (unityId, page, perPage). Não é 403 (sugere rota ausente, não " +
+			"falta de escopo). Veredito: o host declarado (core.feegow.com) está certo, mas o path " +
+			"não está acessível nesta sandbox/licença. Resposta seria {page,pages,perPage,data," +
+			"count} sem campo \"success\" — não confirmado, apenas o que a doc descreve. Mesmo " +
+			"caminho \"financial2/external\" que /stock.location_list, sob um TLD diferente " +
 			"(core.feegow.com vs core.feegow.com.br) — doc bug conhecido, ver ESPECIFICACAO.md §8.",
 	},
 }

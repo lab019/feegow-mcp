@@ -18,29 +18,69 @@ func (e *ConflictError) Error() string {
 	return fmt.Sprintf("feegow: conflito (409): %s", e.Content)
 }
 
-// ValidationError is Feegow's 422 shape: a bare map of field name to a
-// list of validation-error codes, with NO {"success","content"} envelope
-// at all — e.g. {"paciente_id": ["validation.required"]}. This is
-// deliberately a distinct Go type from ConflictError (never the same
-// struct with a "Kind" flag) so callers can tell the two apart with a
-// plain errors.As, matching how differently-shaped the two really are on
-// the wire.
+// ValidationError is a real Feegow 422 — a validation failure on a
+// well-formed request against a route that does exist. It carries
+// whichever of the two shapes doc.txt (and the Fase 0 smoke test against
+// the real API) confirmed this API actually uses for that:
+//
+//   - Fields: a bare Laravel-style map, e.g.
+//     {"paciente_id": ["validation.required"]} — NO envelope at all.
+//   - Message: the other 422 shape, {"success":false,"cod_erro":N,
+//     "message":"..."} with a non-empty message (e.g. "The GET method is
+//     not supported for this route. Supported methods: POST.").
+//
+// Exactly one of the two is populated per instance — classify422
+// (client.go) is the only place that constructs this type. See
+// RouteNotFoundError for the sibling shape this is deliberately NOT: the
+// same envelope with an EMPTY message, which means the route itself
+// doesn't exist and is never a caller-input problem.
 type ValidationError struct {
-	Fields map[string][]string
+	Fields  map[string][]string
+	Message string
 }
 
 func (e *ValidationError) Error() string {
-	names := make([]string, 0, len(e.Fields))
-	for k := range e.Fields {
-		names = append(names, k)
-	}
-	sort.Strings(names)
+	if len(e.Fields) > 0 {
+		names := make([]string, 0, len(e.Fields))
+		for k := range e.Fields {
+			names = append(names, k)
+		}
+		sort.Strings(names)
 
-	parts := make([]string, 0, len(names))
-	for _, name := range names {
-		parts = append(parts, fmt.Sprintf("%s: %s", name, strings.Join(e.Fields[name], ", ")))
+		parts := make([]string, 0, len(names))
+		for _, name := range names {
+			parts = append(parts, fmt.Sprintf("%s: %s", name, strings.Join(e.Fields[name], ", ")))
+		}
+		return fmt.Sprintf("feegow: entrada inválida (422): %s", strings.Join(parts, "; "))
 	}
-	return fmt.Sprintf("feegow: entrada inválida (422): %s", strings.Join(parts, "; "))
+	if e.Message != "" {
+		return fmt.Sprintf("feegow: entrada inválida (422): %s", e.Message)
+	}
+	return "feegow: entrada inválida (422)"
+}
+
+// RouteNotFoundError is Feegow's fingerprint for a route or method that
+// does not exist at all: HTTP 422 with body {"success":false,
+// "cod_erro":0,"message":""} — an EMPTY message, unlike every real 422
+// this API returns (see ValidationError). Confirmed by the Fase 0 smoke
+// test: dozens of probes against nonexistent paths all came back with
+// this exact empty-message shape, while every genuine validation/method
+// error observed had either a populated Fields map or a populated
+// Message.
+//
+// This is an integration bug — this client asked for a path/method
+// Feegow doesn't serve — never a caller-supplied bad value, so it must
+// NOT be sanitized into "revise os dados informados" the way a real
+// feegow.ValidationError is (see tools.SanitizeFeegowError, which
+// deliberately does not touch this type — an errors.As for
+// *ValidationError never matches it) and it must not send an agent off
+// correcting input that was never the problem. Client.Call logs every
+// occurrence at WARN, the same way an unrecognized response shape
+// already is elsewhere in this package.
+type RouteNotFoundError struct{}
+
+func (e *RouteNotFoundError) Error() string {
+	return "feegow: rota ou método não encontrado pela API (422 com corpo vazio) — provável erro de integração, não de entrada do usuário"
 }
 
 // CredentialReason distinguishes the two ways this service's credential to
