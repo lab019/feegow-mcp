@@ -34,14 +34,26 @@ import (
 
 // resolveOwnedAgendamento identifies the patient from args (the same
 // cpf+data_nascimento / telefone+nome_completo pair identificar_paciente
-// accepts) and confirms agendamentoID belongs to that patient — by listing
-// their own agendamentos via /appoints/search (scoped to the RESOLVED
-// paciente_id, never to anything the caller supplied) and checking
-// agendamentoID appears among them.
+// accepts) and confirms agendamentoID belongs to that patient.
+//
+// It does NOT list the identified patient's agendamentos by paciente_id —
+// /appoints/search rejects that shape server-side: data_start/data_end are
+// mandatory unless agendamento_id (or created_at_start/created_at_end) is
+// present (measured against the real API), so a paciente_id-only query
+// would 422 every single time, meaning cancelar/remarcar/confirmar could
+// never reach the mutating call at all. Instead it looks up the ONE
+// agendamento by id — no dates needed, confirmed against the real API — and
+// compares the paciente_id THAT response reports back against the identity
+// resolved on our side. This also means posse no longer depends on Feegow's
+// paciente_id filter actually scoping results server-side (a single point
+// of failure the adversarial review flagged): we read the owner back and
+// compare it ourselves.
 //
 // Returns the resolved paciente_id on success (callers need it for
-// auditWrite) or ErrNaoLocalizado — never a more specific "exists but not
-// yours" error, for the enumeration reason above.
+// auditWrite) or ErrNaoLocalizado for every other outcome — id not found, id
+// found but owned by someone else, or an unexpected response shape — never a
+// more specific "exists but not yours" error, for the enumeration reason
+// above.
 func resolveOwnedAgendamento(ctx context.Context, client *feegow.Client, args IdentidadeArgs, agendamentoID int) (int, error) {
 	identidade, err := IdentificarPaciente(ctx, client, args)
 	if err != nil {
@@ -49,7 +61,7 @@ func resolveOwnedAgendamento(ctx context.Context, client *feegow.Client, args Id
 	}
 
 	resp, err := client.Call(ctx, "appoints.search", feegow.Request{
-		Params: map[string]any{"paciente_id": identidade.PacienteID},
+		Params: map[string]any{"agendamento_id": agendamentoID},
 	})
 	if err != nil {
 		return 0, err
@@ -61,7 +73,7 @@ func resolveOwnedAgendamento(ctx context.Context, client *feegow.Client, args Id
 	}
 
 	for _, e := range entries {
-		if e.AgendamentoID == agendamentoID {
+		if e.AgendamentoID == agendamentoID && e.PacienteID == identidade.PacienteID {
 			return identidade.PacienteID, nil
 		}
 	}

@@ -61,11 +61,12 @@ func TestCancelar_ToolCall_CannotCancelAnotherPatientsAgendamento(t *testing.T) 
 	})
 	mux.HandleFunc("/appoints/search", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Query().Get("paciente_id") != strconv.Itoa(ownerPatientID) {
+		if r.URL.Query().Get("agendamento_id") != strconv.Itoa(agendamentoID) {
 			w.Write([]byte(`{"success":true,"content":[]}`))
 			return
 		}
 		w.Write([]byte(`{"success":true,"content":[{"agendamento_id":` + strconv.Itoa(agendamentoID) +
+			`,"paciente_id":` + strconv.Itoa(ownerPatientID) +
 			`,"data":"07-08-2026","horario":"09:00:00","profissional_id":1,"especialidade_id":1,` +
 			`"procedimento_id":1,"unidade_id":1,"status_id":1}]}`))
 	})

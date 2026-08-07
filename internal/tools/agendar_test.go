@@ -82,7 +82,11 @@ func TestAgendar_RequiresEspecialidadeOrProcedimento(t *testing.T) {
 }
 
 // TestAgendar_RejectsRetroactiveData is guard 1 (ESPECIFICACAO.md §7 regra
-// 1): a past date never reaches Feegow.
+// 1): an unambiguously past date never reaches Feegow. Two days back, not
+// one: validateNotPast (guardas.go) deliberately allows one full day of
+// slack around the UTC "hoje" boundary — see its doc comment and
+// guardas_test.go's TestValidateNotPast_AcceptsYesterdayUTC for why a
+// one-day-back date must NOT be rejected here.
 func TestAgendar_RejectsRetroactiveData(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -91,7 +95,7 @@ func TestAgendar_RejectsRetroactiveData(t *testing.T) {
 	client := newTestClient(t, mux)
 
 	args := validAgendarArgs()
-	args.Data = time.Now().AddDate(0, 0, -1).Format(feegow.ISO8601)
+	args.Data = time.Now().AddDate(0, 0, -2).Format(feegow.ISO8601)
 	_, err := Agendar(ctxWithToken("tok"), client, args)
 	var argErr *ArgumentError
 	if !errors.As(err, &argErr) {

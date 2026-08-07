@@ -43,9 +43,15 @@ type ConsultarAgendaResult struct {
 // this package maps into Agendamento. AgendamentoID also doubles as the
 // posse (ownership) key resolveOwnedAgendamento (agendamento_escrita.go)
 // matches a caller-supplied agendamento_id against — see that file's doc
-// comment.
+// comment. PacienteID exists PURELY for that same posse check: it is the
+// owner Feegow itself reports back for an agendamento, compared against the
+// caller's resolved identity on our side. It must NEVER be copied into
+// Agendamento/ConsultarAgendaResult — consultar_agenda's "no PII in the
+// result" contract (this file's Agendamento doc comment) still applies; this
+// field only ever travels internally.
 type appointSearchEntry struct {
 	AgendamentoID   int    `json:"agendamento_id"`
+	PacienteID      int    `json:"paciente_id"`
 	Data            string `json:"data"` // DD-MM-YYYY on the wire
 	Horario         string `json:"horario"`
 	ProfissionalID  int    `json:"profissional_id"`

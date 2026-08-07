@@ -42,3 +42,23 @@ func auditWrite(tool string, pacienteID, agendamentoID int) {
 	}
 	log.Printf("feegow: WRITE %s — identidade ALEGADA (não verificada) resolveu paciente_id=%d", tool, pacienteID)
 }
+
+// auditReuse records that criar_paciente resolved an EXISTING cadastro via
+// tryIdentifyForCreate (paciente_create.go) and therefore never called
+// /patient/create — the opposite outcome of auditWrite, and deliberately a
+// distinct log line rather than a call to auditWrite: auditWrite's own doc
+// comment defines it as recording that a mutating Feegow call actually
+// happened, and this path is precisely the one where it did not. Reusing
+// auditWrite here would make every "cadastro já existia" lookup
+// indistinguishable, in the log, from a real /patient/create — inflating
+// whatever downstream count relies on that line (e.g. "quantos cadastros
+// criar_paciente criou hoje") by every deduplicated call. Same PII
+// discipline as auditWrite: only the tool name and the resolved paciente_id
+// ever reach this line.
+func auditReuse(tool string, pacienteID int) {
+	if !loglevel.Verbose() {
+		return
+	}
+	log.Printf("feegow: REUSE %s — identidade ALEGADA (não verificada) resolveu paciente_id=%d; cadastro já existia, patient/create NÃO foi chamado",
+		tool, pacienteID)
+}

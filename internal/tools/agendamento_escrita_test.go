@@ -3,6 +3,7 @@ package tools
 import (
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -11,20 +12,23 @@ import (
 	"github.com/lab019/feegow-mcp/internal/feegow"
 )
 
-// appointsSearchByOwner stands up a fake /appoints/search that only ever
-// returns agendamentoID for paciente_id == ownerPatientID — the same
-// scoping resolveOwnedAgendamento relies on. Used by every "posse" test
-// below to prove an identity that resolves to a DIFFERENT paciente_id never
-// sees agendamentoID as theirs.
+// appointsSearchByOwner stands up a fake /appoints/search that mirrors the
+// real API's agendamento_id-scoped lookup resolveOwnedAgendamento relies on:
+// queried by agendamento_id (no dates), it reports back ownerPatientID as
+// the agendamento's paciente_id — the fact resolveOwnedAgendamento compares
+// against the identity resolved from the caller's two facts. Used by every
+// "posse" test below to prove an identity that resolves to a DIFFERENT
+// paciente_id never sees agendamentoID as theirs.
 func appointsSearchByOwner(t *testing.T, mux *http.ServeMux, ownerPatientID, agendamentoID int) {
 	t.Helper()
 	mux.HandleFunc("/appoints/search", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("paciente_id") != strconv.Itoa(ownerPatientID) {
+		if r.URL.Query().Get("agendamento_id") != strconv.Itoa(agendamentoID) {
 			writeJSON(t, w, http.StatusOK, `{"success":true,"content":[]}`)
 			return
 		}
 		writeJSON(t, w, http.StatusOK, `{"success":true,"content":[
-			{"agendamento_id": `+strconv.Itoa(agendamentoID)+`, "data":"07-08-2026","horario":"09:00:00",
+			{"agendamento_id": `+strconv.Itoa(agendamentoID)+`, "paciente_id": `+strconv.Itoa(ownerPatientID)+`,
+			 "data":"07-08-2026","horario":"09:00:00",
 			 "profissional_id":1,"especialidade_id":1,"procedimento_id":1,"unidade_id":1,"status_id":1}
 		]}`)
 	})
@@ -145,6 +149,55 @@ func TestCancelar_PosseCheck_BothSides(t *testing.T) {
 			t.Fatalf("motivo_id sent = %v, want the fixed 1 (Solicitado pelo Paciente) — never caller-chosen", got)
 		}
 	})
+}
+
+// TestResolveOwnedAgendamento_QueriesByAgendamentoID_NeverByPacienteIDOrDates
+// is the regression test for the "posse check never worked" finding: the
+// real /appoints/search rejects a paciente_id-only query with a 422 unless
+// agendamento_id (or a created_at range) is present, and data_start/
+// data_end are mandatory otherwise — so the OLD implementation (query by
+// paciente_id, no dates) would 422 against the real API on every single
+// call, even though it passed here against a permissive mock. This test
+// pins the actual wire query resolveOwnedAgendamento must send: exactly
+// agendamento_id, and NEVER paciente_id or any date parameter — it fails
+// under the old implementation because that code queried by paciente_id and
+// sent no agendamento_id at all.
+func TestResolveOwnedAgendamento_QueriesByAgendamentoID_NeverByPacienteIDOrDates(t *testing.T) {
+	const ownerPatientID = 777
+	const agendamentoID = 55
+
+	var gotQuery url.Values
+	mux := http.NewServeMux()
+	patientList(t, mux, ownerPatientID)
+	mux.HandleFunc("/appoints/search", func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		writeJSON(t, w, http.StatusOK, `{"success":true,"content":[
+			{"agendamento_id": `+strconv.Itoa(agendamentoID)+`, "paciente_id": `+strconv.Itoa(ownerPatientID)+`,
+			 "data":"07-08-2026","horario":"09:00:00",
+			 "profissional_id":1,"especialidade_id":1,"procedimento_id":1,"unidade_id":1,"status_id":1}
+		]}`)
+	})
+	mux.HandleFunc("/appoints/cancel-appoint", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, `{"success":true,"content":"Agendamento cancelado"}`)
+	})
+	client := newTestClient(t, mux)
+
+	_, err := Cancelar(ctxWithToken("tok"), client, CancelarArgs{
+		IdentidadeArgs: identidadeFor("11111111111"), AgendamentoID: agendamentoID, ConfirmacaoPaciente: true,
+	})
+	if err != nil {
+		t.Fatalf("Cancelar: %v", err)
+	}
+
+	if got := gotQuery.Get("agendamento_id"); got != strconv.Itoa(agendamentoID) {
+		t.Fatalf("appoints/search agendamento_id = %q, want %q", got, strconv.Itoa(agendamentoID))
+	}
+	for _, forbidden := range []string{"paciente_id", "data_start", "data_end"} {
+		if gotQuery.Has(forbidden) {
+			t.Fatalf("appoints/search query %v must never carry %q — the real API 422s a paciente_id-only "+
+				"query without dates, which is exactly the bug this test guards against", gotQuery, forbidden)
+		}
+	}
 }
 
 // TestCancelar_UnidentifiedPatient_NeverCallsAppointsSearchOrCancel proves

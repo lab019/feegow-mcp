@@ -129,6 +129,21 @@ func tryIdentifyForCreate(ctx context.Context, client *feegow.Client, cpf, dob, 
 		result *IdentificarPacienteResult
 		err    error
 	)
+	// KNOWN, DELIBERATE GAP: these are the only two complete fact-pairs this
+	// checks. A caller who supplies cpf+email (or any other combination
+	// that isn't one of these two exact pairs) without also supplying
+	// data_nascimento skips deduplication entirely and falls straight
+	// through to /patient/create — even if a cadastro matching that cpf
+	// already exists. This is NOT an oversight: identificar_paciente's
+	// entire design (see its doc comment) is that a single isolated fact
+	// (a CPF alone, an email alone) must never be enough to query for or
+	// confirm a cadastro — that would make this endpoint a
+	// cadastro-existence oracle, letting a caller test guesses one fact at
+	// a time. Extending dedup to more fact combinations would mean
+	// extending that same query-by-a-single-fact capability, which is
+	// exactly the anti-oracle rule this design refuses to weaken. The
+	// accepted cost is duplicate cadastros for callers who don't happen to
+	// supply one of the two recognized complete pairs.
 	switch {
 	case cpf != "" && dob != "":
 		result, err = identifyByCPF(ctx, client, cpf, dob)
@@ -139,7 +154,10 @@ func tryIdentifyForCreate(ctx context.Context, client *feegow.Client, cpf, dob, 
 	}
 
 	if err == nil {
-		auditWrite("criar_paciente", result.PacienteID, 0)
+		// NOT auditWrite: no mutating call happened on this path — the
+		// existing cadastro was found and reused, /patient/create was never
+		// called. See auditReuse's doc comment (audit.go).
+		auditReuse("criar_paciente", result.PacienteID)
 		return result, nil
 	}
 	if errors.Is(err, ErrNaoLocalizado) {
@@ -161,14 +179,25 @@ func tryIdentifyForCreate(ctx context.Context, client *feegow.Client, cpf, dob, 
 // which would misreport a successful creation whose id we simply failed to
 // read as if the cadastro never existed.
 func decodeCreatedPatientID(content json.RawMessage) (int, error) {
+	// Every branch below additionally requires the decoded id to be > 0 —
+	// the same régua validateAgendamentoID (guardas.go) already applies to
+	// agendamento ids. This matters specifically for `content: null`:
+	// json.Unmarshal of a JSON null into any of these shapes (float64,
+	// string, or the pointer-field struct) is a documented no-op — err ==
+	// nil, value left at its zero value — so without the > 0 check a null
+	// content would silently decode to paciente_id 0 and be reported as a
+	// full success, the exact opposite of this function's contract. A null
+	// (or any non-positive id) instead falls through every shape and hits
+	// the same explicit "formato inesperado" error every other
+	// unrecognized shape already gets.
 	var asNumber float64
-	if err := json.Unmarshal(content, &asNumber); err == nil {
+	if err := json.Unmarshal(content, &asNumber); err == nil && int(asNumber) > 0 {
 		return int(asNumber), nil
 	}
 
 	var asString string
 	if err := json.Unmarshal(content, &asString); err == nil {
-		if n, err := strconv.Atoi(strings.TrimSpace(asString)); err == nil {
+		if n, err := strconv.Atoi(strings.TrimSpace(asString)); err == nil && n > 0 {
 			return n, nil
 		}
 	}
@@ -178,10 +207,10 @@ func decodeCreatedPatientID(content json.RawMessage) (int, error) {
 		PatientID  *int `json:"patient_id"`
 	}
 	if err := json.Unmarshal(content, &asObject); err == nil {
-		if asObject.PacienteID != nil {
+		if asObject.PacienteID != nil && *asObject.PacienteID > 0 {
 			return *asObject.PacienteID, nil
 		}
-		if asObject.PatientID != nil {
+		if asObject.PatientID != nil && *asObject.PatientID > 0 {
 			return *asObject.PatientID, nil
 		}
 	}

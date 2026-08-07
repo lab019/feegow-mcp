@@ -57,19 +57,35 @@ func validateAgendamentoID(id int) error {
 // SanitizeFeegowError would otherwise fold into the opaque
 // ErrEntradaInvalidaFeegow.
 //
-// Comparison is done at UTC day granularity: parseISODate-equivalent
-// parsing (time.Parse with a date-only layout) always yields UTC midnight,
-// so truncating time.Now() to a UTC day boundary the same way makes "hoje"
-// the same calendar day on both sides regardless of the server's local
-// timezone — this service has no notion of the clinic's own timezone to
-// use instead, and ESPECIFICACAO.md does not define one.
+// DELIBERATELY LOOSE, on purpose — do not "fix" this back to a strict
+// same-day UTC comparison: this service has no notion of the clinic's own
+// timezone (ESPECIFICACAO.md does not define one), and Feegow itself is the
+// authority on where the "hoje" boundary actually falls — it already
+// enforces the exact cutoff server-side, with the correct notion of today,
+// on every write. A strict `t.Before(todayUTC)` check sounds equivalent but
+// is not: for any timezone behind UTC (e.g. America/Sao_Paulo, UTC-3),
+// there is a multi-hour window every single day — 21:00-23:59 local time —
+// where UTC has already rolled to tomorrow while it is still "hoje" for the
+// patient. A strict check rejects that patient's own today as "retroactive"
+// during that window, every day, right in the middle of typical reception
+// hours — a real, reproducible false rejection this guard must never cause,
+// since it adds no security by rejecting it (Feegow enforces the true
+// boundary regardless).
+//
+// So this only rejects what is unambiguously past in EVERY timezone: more
+// than one full day before UTC "hoje". That still catches the guard's
+// actual purpose — a gross caller mistake like agendar for last month or
+// last year — without ever second-guessing a date that could legitimately
+// be "hoje" somewhere. The precise same-day/next-day boundary is left to
+// Feegow, which is the authority on it.
 func validateNotPast(role, date string) error {
 	t, err := time.Parse(feegow.ISO8601, date)
 	if err != nil {
 		return &ArgumentError{Msg: fmt.Sprintf("%s deve estar em ISO-8601 (YYYY-MM-DD)", role)}
 	}
 	today := time.Now().UTC().Truncate(24 * time.Hour)
-	if t.Before(today) {
+	cutoff := today.AddDate(0, 0, -1) // one full day of slack — see doc comment above
+	if t.Before(cutoff) {
 		return &ArgumentError{Msg: fmt.Sprintf(
 			"%s não pode ser retroativa: %s é anterior a hoje — não é possível agendar no passado", role, date)}
 	}
