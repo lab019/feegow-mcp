@@ -96,3 +96,20 @@ func auditAdminWrite(tool string, pacienteID, agendamentoID int) {
 		log.Printf("feegow: ADMIN WRITE %s", tool)
 	}
 }
+
+// auditAdminWriteQueue is auditAdminWrite's counterpart for
+// gerar_senha_atendimento specifically: that write does not act on a
+// paciente_id or agendamento_id (see GerarSenhaAtendimento's doc comment
+// — it consumes the next position in a unidade's queue, nothing else), so
+// auditAdminWrite's (pacienteID, agendamentoID) shape does not fit. Every
+// other admin write tool calls auditAdminWrite; this one exists only
+// because gerar_senha_atendimento's identifying context genuinely is
+// (unidade_id, tipo_senha) instead — same PII discipline: only internal
+// Feegow identifiers, never patient data (there is none here to begin
+// with).
+func auditAdminWriteQueue(unidadeID, tipoSenha int) {
+	if !loglevel.Verbose() {
+		return
+	}
+	log.Printf("feegow: ADMIN WRITE gerar_senha_atendimento — unidade_id=%d; tipo_senha=%d", unidadeID, tipoSenha)
+}

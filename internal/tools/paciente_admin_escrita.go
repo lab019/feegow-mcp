@@ -88,11 +88,32 @@ func atualizarPaciente(ctx context.Context, client *feegow.Client, args Atualiza
 		return nil, &ArgumentError{Msg: `genero deve ser "M" ou "F"`}
 	}
 
+	cpf, err := argumentDigitsField("cpf", args.CPF)
+	if err != nil {
+		return nil, err
+	}
+	tel, err := argumentDigitsField("telefone", args.Telefone)
+	if err != nil {
+		return nil, err
+	}
+	cel, err := argumentDigitsField("celular", args.Celular)
+	if err != nil {
+		return nil, err
+	}
+	tel2, err := argumentDigitsField("telefone2", args.Telefone2)
+	if err != nil {
+		return nil, err
+	}
+	cel2, err := argumentDigitsField("celular2", args.Celular2)
+	if err != nil {
+		return nil, err
+	}
+
 	wire := map[string]any{"paciente_id": args.PacienteID}
 	if args.NomeCompleto != "" {
 		wire["nome_completo"] = args.NomeCompleto
 	}
-	if cpf := onlyDigits(args.CPF); cpf != "" {
+	if cpf != "" {
 		wire["cpf"] = cpf
 	}
 	if args.Email != "" {
@@ -104,16 +125,16 @@ func atualizarPaciente(ctx context.Context, client *feegow.Client, args Atualiza
 	if args.Genero != "" {
 		wire["genero"] = args.Genero
 	}
-	if tel := onlyDigits(args.Telefone); tel != "" {
+	if tel != "" {
 		wire["telefone"] = tel
 	}
-	if cel := onlyDigits(args.Celular); cel != "" {
+	if cel != "" {
 		wire["celular"] = cel
 	}
-	if tel2 := onlyDigits(args.Telefone2); tel2 != "" {
+	if tel2 != "" {
 		wire["telefone2"] = tel2
 	}
-	if cel2 := onlyDigits(args.Celular2); cel2 != "" {
+	if cel2 != "" {
 		wire["celular2"] = cel2
 	}
 	if args.TabelaID != nil {
@@ -244,8 +265,8 @@ func anexarAoProntuario(ctx context.Context, client *feegow.Client, args AnexarA
 	if err := json.Unmarshal(resp.Content, &body); err != nil {
 		return nil, fmt.Errorf("tools: decoding patient/upload-base64 response: %w", err)
 	}
-	if !body.Success {
-		return nil, fmt.Errorf("tools: upload ao prontuário não confirmado pela Feegow: %s", body.Content)
+	if err := checkEnvelopeNoneSuccess(body.Success); err != nil {
+		return nil, err
 	}
 
 	auditAdminWrite("anexar_ao_prontuario", args.PacienteID, 0)

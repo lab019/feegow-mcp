@@ -51,6 +51,40 @@ var ErrConflitoFeegow = errors.New("feegow: houve um conflito ao processar a sol
 var ErrEntradaInvalidaFeegow = errors.New("feegow: um ou mais parâmetros enviados não foram aceitos pela clínica; " +
 	"revise os dados informados")
 
+// ErrOperacaoNaoConfirmadaFeegow is the sanitized stand-in for a
+// success:false outcome from an EnvelopeNone endpoint — see
+// checkEnvelopeNoneSuccess. EnvelopeNone endpoints (patient.upload_base64,
+// appoints.queue_position, ...) always answer with HTTP 200, so their
+// success:false case never becomes a feegow.ConflictError and never routes
+// through SanitizeFeegowError; without this sentinel a tool would be
+// tempted to interpolate the raw Content straight into its own error, the
+// exact PII leak (a Feegow free-text body carrying a patient's nome/CPF)
+// the adversarial review caught in anexar_ao_prontuario. Never wrap this
+// with the original Feegow body.
+var ErrOperacaoNaoConfirmadaFeegow = errors.New("feegow: a operação não foi confirmada pela clínica; " +
+	"verifique os dados informados")
+
+// checkEnvelopeNoneSuccess is the single choke point every EnvelopeNone
+// tool with a raw top-level "success" (or equivalent) field routes its
+// post-decode check through — the EnvelopeNone counterpart to
+// SanitizeFeegowError. An EnvelopeNone response never goes through
+// parseSuccess's success check (that is the whole reason EnvelopeNone
+// exists for these endpoints — see internal/feegow/registry.go's notes on
+// patient.upload_base64/appoints.queue_position), so nothing upstream of
+// the tool itself ever verifies success for it. A tool that forgets this
+// check either silently reports a Feegow-side failure as its own success
+// (gerar_senha_atendimento before this fix) or leaks Feegow's raw
+// free-text body straight into its own error (anexar_ao_prontuario before
+// this fix) — both closed by routing every EnvelopeNone tool's
+// success:false case through this one function instead of each tool
+// hand-rolling (and potentially forgetting) its own sanitization.
+func checkEnvelopeNoneSuccess(success bool) error {
+	if !success {
+		return ErrOperacaoNaoConfirmadaFeegow
+	}
+	return nil
+}
+
 // SanitizeFeegowError is the single choke point every atendimento tool
 // that can surface a raw Feegow error routes through before returning to
 // its caller. It maps feegow.ConflictError (409, whose Content is Feegow's

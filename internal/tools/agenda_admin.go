@@ -105,14 +105,40 @@ type GerarSenhaAtendimentoResult struct {
 // queuePositionBody mirrors /appoints/queue-position's whole response body
 // — EnvelopeNone because the real top-level success key is misspelled
 // "sucess" (see internal/feegow/registry.go's appoints.queue_position
-// Notes); this only reads the "content" object, whose own field names are
-// spelled normally.
+// Notes). Sucess and Success are BOTH modeled, as *bool (not bool): Fase 0
+// and doc.txt agree the real key is the typo'd "sucess", but the typo is a
+// Feegow bug, not a documented contract — if Feegow ever corrects it
+// server-side, this must keep working without a code change. Using *bool
+// for both lets queuePositionSuccess (below) distinguish "key present,
+// value false" from "key absent" for each spelling independently, instead
+// of two bools that could not tell "false" from "absent" apart. Only the
+// "content" object's own field names are spelled normally.
 type queuePositionBody struct {
+	Sucess  *bool `json:"sucess"`
+	Success *bool `json:"success"`
 	Content struct {
 		Posicao       int    `json:"posicao"`
 		TipoSenha     int    `json:"tipoSenha"`
 		TipoFormatado string `json:"tipoFormatado"`
 	} `json:"content"`
+}
+
+// queuePositionSuccess resolves queuePositionBody's success outcome,
+// preferring the confirmed-real "sucess" key but falling back to the
+// correctly-spelled "success" in case Feegow ever fixes the typo. Neither
+// key present is an unexpected response shape — NOT a silent success: a
+// Feegow response that decodes syntactically but carries no success
+// signal at all must not be read as "the queue position was generated".
+func queuePositionSuccess(body queuePositionBody) (bool, error) {
+	switch {
+	case body.Sucess != nil:
+		return *body.Sucess, nil
+	case body.Success != nil:
+		return *body.Success, nil
+	default:
+		return false, fmt.Errorf("tools: resposta inesperada de appoints/queue-position: " +
+			"nem \"sucess\" nem \"success\" presentes")
+	}
 }
 
 // GerarSenhaAtendimento generates a new queue ticket via
@@ -151,7 +177,15 @@ func gerarSenhaAtendimento(ctx context.Context, client *feegow.Client, args Gera
 	if err := json.Unmarshal(resp.Content, &body); err != nil {
 		return nil, fmt.Errorf("tools: decoding appoints/queue-position response: %w", err)
 	}
+	ok, err := queuePositionSuccess(body)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkEnvelopeNoneSuccess(ok); err != nil {
+		return nil, err
+	}
 
+	auditAdminWriteQueue(*args.UnidadeID, args.TipoSenha)
 	return &GerarSenhaAtendimentoResult{
 		Posicao:       body.Content.Posicao,
 		TipoSenha:     body.Content.TipoSenha,

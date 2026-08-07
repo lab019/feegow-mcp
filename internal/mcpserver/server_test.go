@@ -156,38 +156,46 @@ func TestAtendimentoToolList_HasTheNineFase3Tools(t *testing.T) {
 	}
 }
 
+// adminOnlyToolNames is the explicit, hand-maintained set of tools that
+// must exist ONLY on the admin profile — declared independently of both
+// profiles' actual tools/list results, unlike an earlier version of
+// TestAtendimentoToolList_NeverContainsAdminOnlyTools below that computed
+// "admin-only" as adminNames-minus-atendimentoNames: that computation is
+// impossible to fail by construction, since any tool that leaked into
+// atendimento would, by the same subtraction, stop counting as
+// "admin-only" and silently drop out of the very set being checked against
+// (confirmed by the adversarial review: injecting
+// registerGerarSenhaAtendimento into registerAtendimentoTools left that
+// version of the test green). This fixed list has no such blind spot — a
+// tool named here that also shows up in atendimento's tools/list is
+// unambiguously a leak, regardless of what else atendimento does or does
+// not expose. Kept in sync with registerAdminOnlyTools
+// (internal/mcpserver/tools_admin.go) and the admin-only half of
+// TestAdminToolList_HasTheSevenFase4aAdminOnlyTools's `want` below.
+var adminOnlyToolNames = map[string]bool{
+	"buscar_pacientes":             true,
+	"obter_paciente":               true,
+	"consultar_paciente_clinico":   true,
+	"atualizar_paciente":           true,
+	"anexar_ao_prontuario":         true,
+	"atualizar_status_agendamento": true,
+	"gerar_senha_atendimento":      true,
+}
+
 // TestAtendimentoToolList_NeverContainsAdminOnlyTools is acceptance
 // criterion #9: whatever the atendimento profile's tools/list contains, it
-// must never include a tool that exists only on the admin profile. This is
-// checked structurally (against the live admin tool set, not a hardcoded
-// name list) so the test keeps meaning something once Fase 4 adds
-// admin-only tools — today both sides are empty and the check is
-// vacuously true, but the machinery (real MCP tools/list calls against
-// both profiles) is already exercised and will start doing real work the
-// moment either registerAtendimentoTools or registerAdminTools stops being
-// empty.
+// must never include a tool from adminOnlyToolNames — the fixed,
+// independently-declared set of tools that may only exist on the admin
+// profile (see its doc comment for why this must NOT be computed as
+// "whatever admin has that atendimento doesn't").
 func TestAtendimentoToolList_NeverContainsAdminOnlyTools(t *testing.T) {
 	atendimentoSrv := httptest.NewServer(Handler())
 	defer atendimentoSrv.Close()
-	adminSrv := httptest.NewServer(AdminHandler())
-	defer adminSrv.Close()
 
 	atendimentoNames := listToolNames(t, atendimentoSrv.URL, "fake-token")
-	adminNames := listToolNames(t, adminSrv.URL, "fake-admin-token")
-
-	inAtendimento := make(map[string]bool, len(atendimentoNames))
-	for _, n := range atendimentoNames {
-		inAtendimento[n] = true
-	}
-	adminOnly := make(map[string]bool)
-	for _, n := range adminNames {
-		if !inAtendimento[n] {
-			adminOnly[n] = true
-		}
-	}
 
 	for _, n := range atendimentoNames {
-		if adminOnly[n] {
+		if adminOnlyToolNames[n] {
 			t.Fatalf("atendimento tools/list exposes admin-only tool %q", n)
 		}
 	}
