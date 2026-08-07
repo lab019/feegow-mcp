@@ -349,7 +349,14 @@ func consultarPacienteClinico(ctx context.Context, client *feegow.Client, args C
 }
 
 // clinicoByPacienteID handles the three tipos whose only input is
-// paciente_id (dependentes, linha_tempo, elegibilidade).
+// paciente_id (dependentes, linha_tempo, elegibilidade). NO pagination cap
+// here, unlike consultarProgramasSaude: /patient/list-dependents (doc.txt),
+// /medical-record/timeline (undocumented — Fase 0 only) and
+// /patient/check-eligibility (a bare {elegivel,term} object, not a list at
+// all) document no limit/offset param, and none carries a Pagination spec
+// in internal/feegow/registry.go — confirmed for the two documented ones
+// against doc.txt directly. There is nothing here to cap: response size
+// for these three tipos depends entirely on what Feegow returns.
 func clinicoByPacienteID(ctx context.Context, client *feegow.Client, id feegow.EndpointID, pacienteID int) (*ConsultarPacienteClinicoResult, error) {
 	if pacienteID <= 0 {
 		return nil, &ArgumentError{Msg: "paciente_id é obrigatório para este tipo"}
@@ -358,14 +365,25 @@ func clinicoByPacienteID(ctx context.Context, client *feegow.Client, id feegow.E
 }
 
 // clinicoNoParams handles the two catalog tipos (origens,
-// tabelas_particulares) that take no parameters at all.
+// tabelas_particulares) that take no parameters at all — confirmed by
+// doc.txt (/patient/list-sources, /patient/list-privates document zero
+// query params, not even a paginated one) and by
+// internal/feegow/registry.go (neither entry carries a Pagination spec).
+// No cap to apply: there is nothing to bound, and the clinic-wide catalogs
+// these two endpoints return are themselves already small enumerations
+// (origens, tabelas particulares), not a browsable patient list — response
+// size here is entirely up to Feegow.
 func clinicoNoParams(ctx context.Context, client *feegow.Client, id feegow.EndpointID) (*ConsultarPacienteClinicoResult, error) {
 	return callClinico(ctx, client, id, nil)
 }
 
 // consultarPedidosExame handles tipo=pedidos_exame: paciente_id,
 // data_inicio, data_fim and tipo_pedido are all mandatory per doc.txt (see
-// internal/feegow/registry.go's patient.exam_requests Notes).
+// internal/feegow/registry.go's patient.exam_requests Notes). NO pagination
+// cap: /patient/exam-requests documents no limit/offset param and carries
+// no Pagination spec in the registry — a paciente's pedidos de exame within
+// a date range is bounded by that date range already, not by a page size
+// this tool controls.
 func consultarPedidosExame(ctx context.Context, client *feegow.Client, args ConsultarPacienteClinicoArgs) (*ConsultarPacienteClinicoResult, error) {
 	if args.PacienteID <= 0 {
 		return nil, &ArgumentError{Msg: "paciente_id é obrigatório para tipo=pedidos_exame"}

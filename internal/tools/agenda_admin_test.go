@@ -4,7 +4,10 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
+
+	"github.com/lab019/feegow-mcp/internal/feegow"
 )
 
 // --- atualizar_status_agendamento -----------------------------------------
@@ -118,6 +121,25 @@ func TestAtualizarStatusAgendamento_ObsAndHoraChegadaAreOptional(t *testing.T) {
 	}
 }
 
+// TestAtualizarStatusAgendamento_NoPIIInLogs is item (e)'s coverage for
+// atualizar_status_agendamento: Obs is caller-supplied free text that could
+// carry patient PII (e.g. an operador typing a patient's name into the
+// observação) — auditAdminWrite must only ever log agendamento_id, never
+// Obs itself.
+func TestAtualizarStatusAgendamento_NoPIIInLogs(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/appoints/statusUpdate", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, `{"success":true,"content":{"msg":"ok"}}`)
+	})
+
+	assertNoPIIInLog(t, mux, []string{"Segredo Pessoal"}, func(client *feegow.Client) error {
+		_, err := AtualizarStatusAgendamento(ctxWithToken("tok"), client, AtualizarStatusAgendamentoArgs{
+			AgendamentoID: 1, StatusID: 1, Obs: "Paciente Segredo Pessoal confirmou", Confirmacao: true,
+		})
+		return err
+	})
+}
+
 // --- gerar_senha_atendimento -----------------------------------------------
 
 func TestGerarSenhaAtendimento_RequiresUnidadeID_BeforeAnyFeegowCall(t *testing.T) {
@@ -200,4 +222,131 @@ func TestGerarSenhaAtendimento_DecodesDespiteSucessTypo(t *testing.T) {
 	if result.Posicao != 3 || result.TipoFormatado != "C" {
 		t.Fatalf("result = %+v, want the decoded content despite the \"sucess\" typo", result)
 	}
+}
+
+// TestGerarSenhaAtendimento_SuccessKeyVariants is item (b)'s regression
+// test: before this fix, gerarSenhaAtendimento decoded
+// appoints/queue-position's content without EVER checking success at all —
+// a success:false (or "sucess":false) response silently returned
+// {posicao:0, tipoSenha:0, tipoFormatado:""} as if the ticket had really
+// been generated. queuePositionSuccess must resolve every shape correctly:
+// the real typo'd key, the correctly-spelled key as a forward-compatible
+// fallback (in case Feegow ever fixes the typo server-side), an explicit
+// false under either spelling, and — worst of all — neither key present,
+// which must NOT be read as a silent success.
+func TestGerarSenhaAtendimento_SuccessKeyVariants(t *testing.T) {
+	unidade := 1
+	cases := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{"real typo'd key, true", `{"sucess":true,"content":{"posicao":5,"tipoSenha":1,"tipoFormatado":"P"}}`, false},
+		{"corrected key, true (if Feegow ever fixes the typo)", `{"success":true,"content":{"posicao":5,"tipoSenha":1,"tipoFormatado":"P"}}`, false},
+		{"real typo'd key, false", `{"sucess":false,"content":{"posicao":0,"tipoSenha":0,"tipoFormatado":""}}`, true},
+		{"corrected key, false", `{"success":false,"content":{"posicao":0,"tipoSenha":0,"tipoFormatado":""}}`, true},
+		{"neither key present", `{"content":{"posicao":0,"tipoSenha":0,"tipoFormatado":""}}`, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/appoints/queue-position", func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(t, w, http.StatusOK, c.body)
+			})
+			client := newTestClient(t, mux)
+
+			result, err := GerarSenhaAtendimento(ctxWithToken("tok"), client, GerarSenhaAtendimentoArgs{
+				UnidadeID: &unidade, TipoSenha: 1,
+			})
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("GerarSenhaAtendimento(%s) = %+v, nil, want an error instead of a silent success with posicao=0", c.name, result)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("GerarSenhaAtendimento(%s): %v", c.name, err)
+			}
+			if result.Posicao != 5 {
+				t.Fatalf("GerarSenhaAtendimento(%s) result = %+v, want Posicao=5", c.name, result)
+			}
+		})
+	}
+}
+
+// TestGerarSenhaAtendimento_ServerRejection_NeverLeaksPII completes item
+// (a)'s "qualquer outra tool que use EnvelopeNone" coverage:
+// appoints/queue-position is the third EnvelopeNone endpoint wired to a
+// tool in this package. gerarSenhaAtendimento never interpolates the raw
+// body into its error (unlike anexarAoProntuario before its fix), but this
+// locks that in as a regression test rather than an implicit property.
+func TestGerarSenhaAtendimento_ServerRejection_NeverLeaksPII(t *testing.T) {
+	const plantedFreeText = "Fulano de Tal da Silva CPF 111.111.111-11"
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/appoints/queue-position", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, `{"sucess":false,"content":{"posicao":0,"tipoSenha":0,"tipoFormatado":"","mensagem":"`+plantedFreeText+`"}}`)
+	})
+	client := newTestClient(t, mux)
+
+	unidade := 1
+	_, err := GerarSenhaAtendimento(ctxWithToken("tok"), client, GerarSenhaAtendimentoArgs{
+		UnidadeID: &unidade, TipoSenha: 1,
+	})
+	if !errors.Is(err, ErrOperacaoNaoConfirmadaFeegow) {
+		t.Fatalf("GerarSenhaAtendimento error = %v, want ErrOperacaoNaoConfirmadaFeegow", err)
+	}
+	if s := err.Error(); strings.Contains(s, plantedFreeText) {
+		t.Fatalf("GerarSenhaAtendimento error leaked the raw Feegow body: %q", s)
+	}
+}
+
+// TestGerarSenhaAtendimento_AuditsWrite is item (c)'s regression test:
+// gerar_senha_atendimento's fix added an auditAdminWriteQueue call —
+// previously this write skipped auditing entirely, unlike every other admin
+// write tool in this package. Proves the audit line fires on success and
+// carries exactly unidade_id/tipo_senha.
+func TestGerarSenhaAtendimento_AuditsWrite(t *testing.T) {
+	buf := captureLog(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/appoints/queue-position", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, `{"sucess":true,"content":{"posicao":1,"tipoSenha":1,"tipoFormatado":"P"}}`)
+	})
+	client := newTestClient(t, mux)
+
+	unidade := 7
+	if _, err := GerarSenhaAtendimento(ctxWithToken("tok"), client, GerarSenhaAtendimentoArgs{
+		UnidadeID: &unidade, TipoSenha: 1,
+	}); err != nil {
+		t.Fatalf("GerarSenhaAtendimento: %v", err)
+	}
+
+	logged := buf.String()
+	if !strings.Contains(logged, "ADMIN WRITE gerar_senha_atendimento") {
+		t.Fatalf("gerar_senha_atendimento never audited its write: %s", logged)
+	}
+	if !strings.Contains(logged, "unidade_id=7") || !strings.Contains(logged, "tipo_senha=1") {
+		t.Fatalf("audit line missing unidade_id/tipo_senha: %s", logged)
+	}
+}
+
+// TestGerarSenhaAtendimento_NoPIIInLogs is item (e)'s coverage for
+// gerar_senha_atendimento: this endpoint carries no patient data by design
+// (see auditAdminWriteQueue's doc comment), so this proves that holds even
+// if Feegow's response ever grows an unexpected free-text field —
+// queuePositionBody's Content struct has no field for it, so it is simply
+// never decoded, let alone logged.
+func TestGerarSenhaAtendimento_NoPIIInLogs(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/appoints/queue-position", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, `{"sucess":true,"content":{"posicao":1,"tipoSenha":1,"tipoFormatado":"P","observacao":"Segredo Pessoal"}}`)
+	})
+
+	unidade := 1
+	assertNoPIIInLog(t, mux, []string{"Segredo Pessoal"}, func(client *feegow.Client) error {
+		_, err := GerarSenhaAtendimento(ctxWithToken("tok"), client, GerarSenhaAtendimentoArgs{
+			UnidadeID: &unidade, TipoSenha: 1,
+		})
+		return err
+	})
 }

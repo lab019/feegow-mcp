@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/lab019/feegow-mcp/internal/feegow"
 )
 
 // --- buscar_pacientes -------------------------------------------------
@@ -170,6 +172,24 @@ func TestBuscarPacientes_ReturnsRichFields(t *testing.T) {
 	}
 }
 
+// TestBuscarPacientes_NoPIIInLogs is item (e)'s coverage for
+// buscar_pacientes: the /patient/list response this tool decodes carries
+// nome/celular directly — none of it may ever reach the process log, even
+// though this tool never audits (it is a read, not a write).
+func TestBuscarPacientes_NoPIIInLogs(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/patient/list", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, `{"success":true,"content":[{
+			"patient_id":42,"nome":"Segredo Pessoal","celular":"21955550000"
+		}],"total":1}`)
+	})
+
+	assertNoPIIInLog(t, mux, []string{"Segredo Pessoal", "21955550000"}, func(client *feegow.Client) error {
+		_, err := BuscarPacientes(ctxWithToken("tok"), client, BuscarPacientesArgs{})
+		return err
+	})
+}
+
 // --- obter_paciente -----------------------------------------------------
 
 // TestObterPaciente_RequiresPacienteID proves paciente_id is validated
@@ -217,6 +237,23 @@ func TestObterPaciente_RoundTripsFullCadastro(t *testing.T) {
 	if m["nascimento"] != "27-02-1986" {
 		t.Fatalf("nascimento = %v, want the raw DD-MM-YYYY value passed through unconverted", m["nascimento"])
 	}
+}
+
+// TestObterPaciente_NoPIIInLogs is item (e)'s coverage for obter_paciente:
+// the full /patient/search cadastro this tool passes through carries
+// nome/cpf/nascimento — none of it may ever reach the process log.
+func TestObterPaciente_NoPIIInLogs(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/patient/search", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, `{"success":true,"content":{
+			"id":6563,"nome":"Segredo Pessoal","documentos":{"cpf":"01234567890"}
+		}}`)
+	})
+
+	assertNoPIIInLog(t, mux, []string{"Segredo Pessoal", "01234567890"}, func(client *feegow.Client) error {
+		_, err := ObterPaciente(ctxWithToken("tok"), client, ObterPacienteArgs{PacienteID: 6563})
+		return err
+	})
 }
 
 // --- consultar_paciente_clinico ------------------------------------------
@@ -456,6 +493,61 @@ func TestConsultarPacienteClinico_OrigensAndTabelasParticulares_NoParams(t *test
 			}
 			if _, ok := result.Itens.([]any); !ok {
 				t.Fatalf("tipo=%s Itens = %#v, want a decoded list", c.tipo, result.Itens)
+			}
+		})
+	}
+}
+
+// TestConsultarPacienteClinico_TiposWithoutPaginationSupport_NeverForwardLimitOrOffset
+// is item (f)'s regression test: programas_saude is the ONLY tipo whose
+// underlying endpoint (patient.health-programs) documents limit/offset —
+// confirmed against both internal/feegow/registry.go's PaginationSpec (only
+// patient.health_programs carries one) and doc.txt, which shows no
+// limit/offset param for /patient/list-dependents, /patient/exam-requests,
+// /medical-record/timeline (undocumented — Fase 0 only), /patient/list-sources
+// or /patient/list-privates. A caller setting Limit/Offset for one of these
+// five tipos must never see it silently forwarded as if it did something —
+// the response size for these five is whatever Feegow returns, not
+// something this tool can cap.
+func TestConsultarPacienteClinico_TiposWithoutPaginationSupport_NeverForwardLimitOrOffset(t *testing.T) {
+	tipoPedido := 1
+	cases := []struct {
+		tipo string
+		path string
+		args ConsultarPacienteClinicoArgs
+	}{
+		{tipoDependentes, "/patient/list-dependents", ConsultarPacienteClinicoArgs{
+			Tipo: tipoDependentes, PacienteID: 5, Limit: 999999, Offset: 10,
+		}},
+		{tipoPedidosExame, "/patient/exam-requests", ConsultarPacienteClinicoArgs{
+			Tipo: tipoPedidosExame, PacienteID: 5, DataInicio: "2023-03-10", DataFim: "2023-03-10",
+			TipoPedido: &tipoPedido, Limit: 999999, Offset: 10,
+		}},
+		{tipoLinhaTempo, "/medical-record/timeline", ConsultarPacienteClinicoArgs{
+			Tipo: tipoLinhaTempo, PacienteID: 5, Limit: 999999, Offset: 10,
+		}},
+		{tipoOrigens, "/patient/list-sources", ConsultarPacienteClinicoArgs{
+			Tipo: tipoOrigens, Limit: 999999, Offset: 10,
+		}},
+		{tipoTabelasParticulares, "/patient/list-privates", ConsultarPacienteClinicoArgs{
+			Tipo: tipoTabelasParticulares, Limit: 999999, Offset: 10,
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.tipo, func(t *testing.T) {
+			var gotQuery url.Values
+			mux := http.NewServeMux()
+			mux.HandleFunc(c.path, func(w http.ResponseWriter, r *http.Request) {
+				gotQuery = r.URL.Query()
+				writeJSON(t, w, http.StatusOK, `{"success":true,"content":[],"total":0}`)
+			})
+			client := newTestClient(t, mux)
+
+			if _, err := ConsultarPacienteClinico(ctxWithToken("tok"), client, c.args); err != nil {
+				t.Fatalf("ConsultarPacienteClinico(tipo=%s): %v", c.tipo, err)
+			}
+			if gotQuery.Has("limit") || gotQuery.Has("offset") {
+				t.Fatalf("tipo=%s forwarded limit/offset the endpoint does not support: %v", c.tipo, gotQuery)
 			}
 		})
 	}

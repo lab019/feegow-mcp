@@ -3,7 +3,10 @@ package tools
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
+
+	"github.com/lab019/feegow-mcp/internal/feegow"
 )
 
 // --- atualizar_paciente ---------------------------------------------------
@@ -119,6 +122,112 @@ func TestAtualizarPaciente_ServerRejection_IsSanitized(t *testing.T) {
 	if !errors.Is(err, ErrConflitoFeegow) {
 		t.Fatalf("AtualizarPaciente error = %v, want ErrConflitoFeegow", err)
 	}
+}
+
+// TestAtualizarPaciente_ServerRejection_NeverLeaksPII is item (a)'s
+// "cubra também atualizar_paciente" regression test. /patient/edit is
+// EnvelopeStandard, so its success:false already becomes a
+// feegow.ConflictError automatically (parseSuccess) before this tool ever
+// sees it, and SanitizeFeegowError already sanitizes every ConflictError —
+// this proves that full pipeline holds end to end for this specific tool
+// (not just at errors_test.go's unit level) when the planted PII is a
+// realistic Feegow free-text body ("Paciente Fulano (CPF ...) possui
+// pendência financeira").
+func TestAtualizarPaciente_ServerRejection_NeverLeaksPII(t *testing.T) {
+	const plantedName = "Fulano de Tal da Silva"
+	const plantedCPF = "111.111.111-11"
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/patient/edit", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, `{"success":false,"content":"Paciente `+plantedName+` (CPF `+plantedCPF+`) possui pendência financeira"}`)
+	})
+	client := newTestClient(t, mux)
+
+	_, err := AtualizarPaciente(ctxWithToken("tok"), client, AtualizarPacienteArgs{
+		PacienteID: 1, Confirmacao: true,
+	})
+	if !errors.Is(err, ErrConflitoFeegow) {
+		t.Fatalf("AtualizarPaciente error = %v, want ErrConflitoFeegow", err)
+	}
+	if s := err.Error(); strings.Contains(s, plantedName) || strings.Contains(s, plantedCPF) {
+		t.Fatalf("AtualizarPaciente error leaked the raw Feegow body: %q", s)
+	}
+}
+
+// TestAtualizarPaciente_RejectsCPFWithNoDigits_BeforeAnyFeegowCall is item
+// (d)'s regression test for argumentDigitsField (normalize.go): before this
+// fix, onlyDigits silently reduced a garbage cpf like "não sei" to "", and
+// atualizarPaciente happily omitted "cpf" from the wire body — Feegow was
+// never even asked to change it, yet the caller got back
+// {"atualizado":true}, indistinguishable from a real update. The field must
+// now be rejected, by name, before any Feegow call.
+func TestAtualizarPaciente_RejectsCPFWithNoDigits_BeforeAnyFeegowCall(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected Feegow call for a cpf with no digits: %s %s", r.Method, r.URL)
+	})
+	client := newTestClient(t, mux)
+
+	_, err := AtualizarPaciente(ctxWithToken("tok"), client, AtualizarPacienteArgs{
+		PacienteID: 1, CPF: "não sei", Confirmacao: true,
+	})
+	var argErr *ArgumentError
+	if !errors.As(err, &argErr) {
+		t.Fatalf("AtualizarPaciente error = %v (%T), want *ArgumentError", err, err)
+	}
+	if !strings.Contains(argErr.Msg, "cpf") {
+		t.Fatalf("ArgumentError.Msg = %q, want it to name the field %q", argErr.Msg, "cpf")
+	}
+}
+
+// TestAtualizarPaciente_RejectsPhoneFieldsWithNoDigits_BeforeAnyFeegowCall
+// extends the cpf case above to every other digits-only field
+// atualizar_paciente accepts, proving argumentDigitsField's fix is not
+// cpf-specific.
+func TestAtualizarPaciente_RejectsPhoneFieldsWithNoDigits_BeforeAnyFeegowCall(t *testing.T) {
+	cases := []struct {
+		field string
+		args  AtualizarPacienteArgs
+	}{
+		{"telefone", AtualizarPacienteArgs{PacienteID: 1, Telefone: "ramal principal", Confirmacao: true}},
+		{"celular", AtualizarPacienteArgs{PacienteID: 1, Celular: "sem número", Confirmacao: true}},
+	}
+	for _, c := range cases {
+		t.Run(c.field, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+				t.Fatalf("unexpected Feegow call for %s with no digits: %s %s", c.field, r.Method, r.URL)
+			})
+			client := newTestClient(t, mux)
+
+			_, err := AtualizarPaciente(ctxWithToken("tok"), client, c.args)
+			var argErr *ArgumentError
+			if !errors.As(err, &argErr) {
+				t.Fatalf("AtualizarPaciente(%s) error = %v (%T), want *ArgumentError", c.field, err, err)
+			}
+			if !strings.Contains(argErr.Msg, c.field) {
+				t.Fatalf("ArgumentError.Msg = %q, want it to name the field %q", argErr.Msg, c.field)
+			}
+		})
+	}
+}
+
+// TestAtualizarPaciente_NoPIIInLogs is item (e)'s coverage for
+// atualizar_paciente: a write tool whose ARGUMENTS carry the PII (nome,
+// cpf) rather than the response — auditAdminWrite must only ever log
+// paciente_id, never any of the fields being written.
+func TestAtualizarPaciente_NoPIIInLogs(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/patient/edit", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, `{"success":true,"content":"Paciente atualizado"}`)
+	})
+
+	assertNoPIIInLog(t, mux, []string{"Segredo Pessoal", "11111111111"}, func(client *feegow.Client) error {
+		_, err := AtualizarPaciente(ctxWithToken("tok"), client, AtualizarPacienteArgs{
+			PacienteID: 1, NomeCompleto: "Segredo Pessoal", CPF: "111.111.111-11", Confirmacao: true,
+		})
+		return err
+	})
 }
 
 // --- anexar_ao_prontuario -------------------------------------------------
@@ -269,4 +378,51 @@ func TestAnexarAoProntuario_ServerSuccessFalse_IsAnError(t *testing.T) {
 	if err == nil {
 		t.Fatal("want an error when Feegow reports success:false")
 	}
+}
+
+// TestAnexarAoProntuario_ServerRejection_NeverLeaksPII is item (a)'s core
+// regression test — the exact bug the adversarial review caught:
+// anexarAoProntuario used to interpolate Feegow's raw, free-text
+// EnvelopeNone body straight into its own error
+// (`fmt.Errorf("...: %s", body.Content)`), and that body can carry the
+// patient's own nome/CPF right back into a public-facing agent transcript.
+// checkEnvelopeNoneSuccess/ErrOperacaoNaoConfirmadaFeegow must keep that
+// from happening no matter what free text Feegow sends back.
+func TestAnexarAoProntuario_ServerRejection_NeverLeaksPII(t *testing.T) {
+	const plantedName = "Fulano de Tal da Silva"
+	const plantedCPF = "111.111.111-11"
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/patient/upload-base64", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, `{"success":false,"content":"Paciente `+plantedName+` (CPF `+plantedCPF+`) já possui um arquivo com esse nome"}`)
+	})
+	client := newTestClient(t, mux)
+
+	_, err := AnexarAoProntuario(ctxWithToken("tok"), client, AnexarAoProntuarioArgs{
+		PacienteID: 1, Base64File: "data:application/pdf;base64,AAAA", Confirmacao: true,
+	})
+	if !errors.Is(err, ErrOperacaoNaoConfirmadaFeegow) {
+		t.Fatalf("AnexarAoProntuario error = %v, want ErrOperacaoNaoConfirmadaFeegow", err)
+	}
+	if s := err.Error(); strings.Contains(s, plantedName) || strings.Contains(s, plantedCPF) {
+		t.Fatalf("AnexarAoProntuario error leaked the raw Feegow body: %q", s)
+	}
+}
+
+// TestAnexarAoProntuario_NoPIIInLogs is item (e)'s coverage for
+// anexar_ao_prontuario: the caller's own cpf/nascimento arguments must
+// never reach the audit log line, same discipline as
+// TestAtualizarPaciente_NoPIIInLogs.
+func TestAnexarAoProntuario_NoPIIInLogs(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/patient/upload-base64", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, `{"success":true,"fileId":1,"content":"Arquivo enviado com sucesso."}`)
+	})
+
+	assertNoPIIInLog(t, mux, []string{"11111111111"}, func(client *feegow.Client) error {
+		_, err := AnexarAoProntuario(ctxWithToken("tok"), client, AnexarAoProntuarioArgs{
+			CPF: "111.111.111-11", Nascimento: "2000-01-01", Base64File: "data:application/pdf;base64,AAAA", Confirmacao: true,
+		})
+		return err
+	})
 }
