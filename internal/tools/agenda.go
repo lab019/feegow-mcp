@@ -51,6 +51,22 @@ type appointSearchEntry struct {
 // identification requirement structural, not a convention callers could
 // bypass by skipping a step.
 func ConsultarAgenda(ctx context.Context, client *feegow.Client, args IdentidadeArgs) (*ConsultarAgendaResult, error) {
+	result, err := consultarAgenda(ctx, client, args)
+	if err != nil {
+		// Single choke point (see SanitizeFeegowError's doc): every error
+		// path below funnels through here on the way out, so a raw Feegow
+		// 409/422 body — which can carry patient PII — never reaches this
+		// tool's caller.
+		return nil, SanitizeFeegowError(err)
+	}
+	return result, nil
+}
+
+// consultarAgenda is ConsultarAgenda's implementation, kept separate so
+// every return path — however many client.Call sites it grows in the
+// future — passes through ConsultarAgenda's single sanitizing wrapper
+// above, instead of each one needing its own sanitize call.
+func consultarAgenda(ctx context.Context, client *feegow.Client, args IdentidadeArgs) (*ConsultarAgendaResult, error) {
 	identidade, err := IdentificarPaciente(ctx, client, args)
 	if err != nil {
 		return nil, err

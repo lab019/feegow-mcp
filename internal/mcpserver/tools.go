@@ -31,7 +31,7 @@ func registerListarCatalogo(s *mcp.Server, client *feegow.Client) {
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.CatalogoArgs) (*mcp.CallToolResult, tools.CatalogoResult, error) {
 		result, err := tools.ListarCatalogo(ctx, client, args)
 		if err != nil {
-			return nil, tools.CatalogoResult{}, err
+			return nil, tools.CatalogoResult{}, tools.SanitizeFeegowError(err)
 		}
 		return nil, *result, nil
 	})
@@ -48,7 +48,7 @@ func registerBuscarHorariosLivres(s *mcp.Server, client *feegow.Client) {
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.HorariosLivresArgs) (*mcp.CallToolResult, tools.HorariosLivresResult, error) {
 		result, err := tools.BuscarHorariosLivres(ctx, client, args)
 		if err != nil {
-			return nil, tools.HorariosLivresResult{}, err
+			return nil, tools.HorariosLivresResult{}, tools.SanitizeFeegowError(err)
 		}
 		return nil, *result, nil
 	})
@@ -69,7 +69,7 @@ func registerIdentificarPaciente(s *mcp.Server, client *feegow.Client) {
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.IdentidadeArgs) (*mcp.CallToolResult, tools.IdentificarPacienteResult, error) {
 		result, err := tools.IdentificarPaciente(ctx, client, args)
 		if err != nil {
-			return nil, tools.IdentificarPacienteResult{}, err
+			return nil, tools.IdentificarPacienteResult{}, tools.SanitizeFeegowError(err)
 		}
 		return nil, *result, nil
 	})
@@ -91,7 +91,7 @@ func registerConsultarAgenda(s *mcp.Server, client *feegow.Client) {
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.IdentidadeArgs) (*mcp.CallToolResult, tools.ConsultarAgendaResult, error) {
 		result, err := tools.ConsultarAgenda(ctx, client, args)
 		if err != nil {
-			return nil, tools.ConsultarAgendaResult{}, err
+			return nil, tools.ConsultarAgendaResult{}, tools.SanitizeFeegowError(err)
 		}
 		return nil, *result, nil
 	})

@@ -31,10 +31,15 @@ func TestConsultarAgenda_SingleFact_RejectsBeforeAnyFeegowCall(t *testing.T) {
 // the identity resolution is structural, not best-effort: when
 // identificação fails, /appoints/search is never even attempted, and the
 // uniform ErrNaoLocalizado propagates unchanged.
+//
+// "not found" is simulated the way the real Feegow API actually reports it
+// (verified against the sandbox): HTTP 200 with an empty content array, not
+// an HTTP error status — see the same note on
+// TestIdentificarPaciente_NotFoundAndMismatch_ProduceIdenticalError.
 func TestConsultarAgenda_UnidentifiedPatient_NeverCallsAppointsSearch(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/patient/list", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, http.StatusConflict, `{"success":false,"content":"Paciente não existe"}`)
+		writeJSON(t, w, http.StatusOK, `{"success":true,"content":[],"total":0}`)
 	})
 	mux.HandleFunc("/appoints/search", func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("appoints/search must never be called for an unidentified patient")
@@ -111,5 +116,55 @@ func TestConsultarAgenda_Success(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "sigilosa") {
 		t.Fatalf("consultar_agenda result leaked a clinical note: %s", raw)
+	}
+}
+
+// TestConsultarAgenda_FeegowErrorBody_NeverLeaksPII is the regression test
+// for the adversarial review's most severe finding: a 409 or 422 from
+// Feegow's /appoints/search can carry a free-text body stuffed with patient
+// PII (the review reproduced "Paciente Fulano de Tal (CPF 111.111.111-11)
+// possui pendência financeira"). None of that body — planted here as
+// distinct name/CPF markers — may survive into the error this tool returns
+// to its caller (and, from there, a public agent transcript).
+func TestConsultarAgenda_FeegowErrorBody_NeverLeaksPII(t *testing.T) {
+	const plantedName = "Fulano de Tal da Silva"
+	const plantedCPF = "111.111.111-11"
+
+	cases := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{
+			"409 conflict body", http.StatusConflict,
+			`{"success":false,"content":"Paciente ` + plantedName + ` (CPF ` + plantedCPF + `) possui pendência financeira"}`,
+		},
+		{
+			"422 validation body", http.StatusUnprocessableEntity,
+			`{"paciente_id":["já existe agendamento para ` + plantedName + `, CPF ` + plantedCPF + `"]}`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/patient/list", func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(t, w, http.StatusOK, `{"success":true,"content":[{"patient_id":777,"nome":"X","nascimento":"2000-01-01"}],"total":1}`)
+			})
+			mux.HandleFunc("/appoints/search", func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(t, w, c.status, c.body)
+			})
+			client := newTestClient(t, mux)
+
+			_, err := ConsultarAgenda(ctxWithToken("tok"), client, IdentidadeArgs{
+				CPF: "11111111111", DataNascimento: "2000-01-01",
+			})
+			if err == nil {
+				t.Fatal("want an error, got nil")
+			}
+			msg := err.Error()
+			if strings.Contains(msg, plantedName) || strings.Contains(msg, "Fulano") || strings.Contains(msg, plantedCPF) || strings.Contains(msg, "111.111.111-11") {
+				t.Fatalf("ConsultarAgenda error leaked the Feegow error body: %q", msg)
+			}
+		})
 	}
 }

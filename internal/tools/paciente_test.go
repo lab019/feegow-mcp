@@ -246,15 +246,25 @@ func TestIdentificarPaciente_NeverLeaksPII(t *testing.T) {
 }
 
 // TestIdentificarPaciente_NotFoundAndMismatch_ProduceIdenticalError is
-// acceptance criterion 4: a cadastro that does not exist at all (Feegow
-// 409) and a cadastro that exists but whose second fact does not match
-// must be byte-for-byte indistinguishable from the caller's side —
-// otherwise the difference itself becomes an oracle for enumerating valid
-// CPFs against the clinic's real patient base.
+// acceptance criterion 4: a cadastro that does not exist at all and a
+// cadastro that exists but whose second fact does not match must be
+// byte-for-byte indistinguishable from the caller's side — otherwise the
+// difference itself becomes an oracle for enumerating valid CPFs against
+// the clinic's real patient base.
+//
+// The "does not exist" case is simulated the way the real Feegow API
+// actually reports it (verified against the sandbox): HTTP 200 with
+// {"success":true,"content":[],"total":0} — an ordinary empty result, not
+// an HTTP error. patient.list's contract never guarantees a 409/422 for
+// "no match"; len(patients) != 1 is what makes an empty list collapse into
+// ErrNaoLocalizado (see identifyByCPF), and this test has to exercise that
+// path, not the separate 409-folding path mapNotFound also happens to
+// cover (see TestIdentificarPaciente_UnexpectedFeegowFailure_IsNotDisguisedAsNotFound
+// for that one).
 func TestIdentificarPaciente_NotFoundAndMismatch_ProduceIdenticalError(t *testing.T) {
 	notFoundMux := http.NewServeMux()
 	notFoundMux.HandleFunc("/patient/list", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, http.StatusConflict, `{"success":false,"content":"Paciente não existe"}`)
+		writeJSON(t, w, http.StatusOK, `{"success":true,"content":[],"total":0}`)
 	})
 	notFoundClient := newTestClient(t, notFoundMux)
 	_, err1 := IdentificarPaciente(ctxWithToken("tok"), notFoundClient, IdentidadeArgs{
@@ -281,6 +291,40 @@ func TestIdentificarPaciente_NotFoundAndMismatch_ProduceIdenticalError(t *testin
 	}
 	if !errors.Is(err2, ErrNaoLocalizado) {
 		t.Fatalf("mismatch error = %v, want ErrNaoLocalizado", err2)
+	}
+}
+
+// TestIdentificarPaciente_PatientListErrorResponses_FoldIntoNaoLocalizado
+// covers mapNotFound's actual job: patient.list responding with an HTTP
+// error shape (409 ConflictError or 422 ValidationError) — distinct from
+// the ordinary "200 + empty content" not-found shape covered by
+// TestIdentificarPaciente_NotFoundAndMismatch_ProduceIdenticalError — still
+// has to collapse into the same uniform ErrNaoLocalizado, not leak through
+// as some other error type an attacker could use to tell the two apart.
+func TestIdentificarPaciente_PatientListErrorResponses_FoldIntoNaoLocalizado(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"409 conflict", http.StatusConflict, `{"success":false,"content":"Paciente não existe"}`},
+		{"422 validation", http.StatusUnprocessableEntity, `{"cpf":["validation.required"]}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/patient/list", func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(t, w, c.status, c.body)
+			})
+			client := newTestClient(t, mux)
+
+			_, err := IdentificarPaciente(ctxWithToken("tok"), client, IdentidadeArgs{
+				CPF: "99999999999", DataNascimento: "2000-01-01",
+			})
+			if !errors.Is(err, ErrNaoLocalizado) {
+				t.Fatalf("err = %v, want ErrNaoLocalizado", err)
+			}
+		})
 	}
 }
 
