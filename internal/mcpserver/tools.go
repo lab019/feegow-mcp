@@ -96,3 +96,123 @@ func registerConsultarAgenda(s *mcp.Server, client *feegow.Client) {
 		return nil, *result, nil
 	})
 }
+
+// registerAgendar registers agendar — the first write tool of Fase 3. It
+// resolves paciente_id internally from the same two facts
+// identificar_paciente requires; a raw paciente_id is never an accepted
+// argument. See internal/tools/agendar.go for the four business-rule
+// guards enforced before any Feegow call (retroactive date, convênio
+// valor, local_id pointer, explicit confirmation) and for why no
+// availability pre-check is made ("horário ocupado" is a race, not
+// something a pre-check can close).
+func registerAgendar(s *mcp.Server, client *feegow.Client) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "agendar",
+		Description: "Marca uma nova consulta para um paciente já cadastrado. Identifica o paciente a " +
+			"partir de DOIS fatos que precisam bater — cpf+data_nascimento OU telefone+nome_completo — e " +
+			"NUNCA aceita um identificador de paciente diretamente. Exige confirmação explícita do " +
+			"paciente (confirmacao_paciente=true). Se o horário informado acabou de ser ocupado por " +
+			"outra pessoa, isso é reportado como um estado recuperável — ofereça outros horários, não " +
+			"trate como falha.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.AgendarArgs) (*mcp.CallToolResult, tools.AgendarResult, error) {
+		result, err := tools.Agendar(ctx, client, args)
+		if err != nil {
+			return nil, tools.AgendarResult{}, err
+		}
+		return nil, *result, nil
+	})
+}
+
+// registerCancelar registers cancelar. Its argument shape carries the two
+// identification facts AND agendamento_id — never just the id — because on
+// this stateless, unauthenticated channel a bare id would let anyone cancel
+// anyone's consulta by guessing a number. Before cancelling, the tool
+// confirms agendamento_id is actually one of the identified patient's own
+// bookings (see internal/tools/agendamento_escrita.go); an id that isn't
+// theirs fails exactly like an unrecognized patient — the same uniform
+// "não localizado" identificar_paciente already uses, never a distinct
+// "not yours" message. motivo_id is fixed to "Solicitado pelo Paciente" and
+// is never an argument this tool accepts.
+func registerCancelar(s *mcp.Server, client *feegow.Client) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "cancelar",
+		Description: "Cancela uma consulta de um paciente já cadastrado. Identifica o paciente a partir " +
+			"de DOIS fatos que precisam bater — cpf+data_nascimento OU telefone+nome_completo — e exige " +
+			"o agendamento_id (obtido via consultar_agenda), que precisa pertencer a esse paciente; um id " +
+			"que não pertence a ele falha da mesma forma que um paciente não localizado. Exige " +
+			"confirmação explícita do paciente (confirmacao_paciente=true).",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.CancelarArgs) (*mcp.CallToolResult, tools.CancelarResult, error) {
+		result, err := tools.Cancelar(ctx, client, args)
+		if err != nil {
+			return nil, tools.CancelarResult{}, err
+		}
+		return nil, *result, nil
+	})
+}
+
+// registerRemarcar registers remarcar — same posse (ownership) check as
+// cancelar, but moving the agendamento to a new data/horário via
+// /appoints/reschedule (Feegow's actual atomic remarcação) rather than
+// agendar+cancelar, which Fase 0 confirmed cannot work here — see
+// internal/tools/agendamento_escrita.go's Remarcar doc comment.
+func registerRemarcar(s *mcp.Server, client *feegow.Client) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "remarcar",
+		Description: "Remarca uma consulta de um paciente já cadastrado para uma nova data/horário. " +
+			"Identifica o paciente a partir de DOIS fatos que precisam bater — cpf+data_nascimento OU " +
+			"telefone+nome_completo — e exige o agendamento_id (obtido via consultar_agenda), que " +
+			"precisa pertencer a esse paciente. Exige confirmação explícita do paciente " +
+			"(confirmacao_paciente=true). Se o novo horário acabou de ser ocupado por outra pessoa, isso " +
+			"é reportado como um estado recuperável — ofereça outros horários, não trate como falha.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.RemarcarArgs) (*mcp.CallToolResult, tools.RemarcarResult, error) {
+		result, err := tools.Remarcar(ctx, client, args)
+		if err != nil {
+			return nil, tools.RemarcarResult{}, err
+		}
+		return nil, *result, nil
+	})
+}
+
+// registerConfirmar registers confirmar — same posse (ownership) check as
+// cancelar/remarcar, over the undocumented /appoints/confirm endpoint Fase
+// 0 found.
+func registerConfirmar(s *mcp.Server, client *feegow.Client) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "confirmar",
+		Description: "Confirma presença numa consulta de um paciente já cadastrado. Identifica o " +
+			"paciente a partir de DOIS fatos que precisam bater — cpf+data_nascimento OU " +
+			"telefone+nome_completo — e exige o agendamento_id (obtido via consultar_agenda), que " +
+			"precisa pertencer a esse paciente. Exige confirmação explícita do paciente " +
+			"(confirmacao_paciente=true).",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.ConfirmarArgs) (*mcp.CallToolResult, tools.ConfirmarResult, error) {
+		result, err := tools.Confirmar(ctx, client, args)
+		if err != nil {
+			return nil, tools.ConfirmarResult{}, err
+		}
+		return nil, *result, nil
+	})
+}
+
+// registerCriarPaciente registers criar_paciente. Before creating anything,
+// it tries to identify an existing cadastro from whichever complete
+// fact-pair the caller's args form — never duplicating a patient who
+// already exists. Its result is exactly identificar_paciente's shape
+// (paciente_id, ja_existia): no PII returned, ever.
+func registerCriarPaciente(s *mcp.Server, client *feegow.Client) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "criar_paciente",
+		Description: "Cria um cadastro de paciente novo. Antes de criar, tenta identificar um cadastro " +
+			"já existente a partir dos dados informados (cpf+data_nascimento OU celular+nome_completo); " +
+			"se já existir, devolve o cadastro existente (ja_existia=true) em vez de duplicar. Exige " +
+			"nome_completo e AO MENOS UM entre cpf, celular, data_nascimento ou email, além de " +
+			"confirmação explícita do paciente (confirmacao_paciente=true). Retorna apenas o " +
+			"identificador interno do paciente, nunca nome, CPF, endereço ou qualquer outro dado " +
+			"pessoal.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.CriarPacienteArgs) (*mcp.CallToolResult, tools.IdentificarPacienteResult, error) {
+		result, err := tools.CriarPaciente(ctx, client, args)
+		if err != nil {
+			return nil, tools.IdentificarPacienteResult{}, err
+		}
+		return nil, *result, nil
+	})
+}

@@ -89,7 +89,15 @@ func registerAtendimentoTools(s *mcp.Server, client *feegow.Client) {
 	registerBuscarHorariosLivres(s, client)
 	registerIdentificarPaciente(s, client)
 	registerConsultarAgenda(s, client)
-	// Fase 3: escritas de atendimento + as guardas de negócio do §7.
+	// Fase 3: escritas de atendimento, cada uma com as guardas de negócio
+	// do §7 (data retroativa, valor/plano, local_id como ponteiro,
+	// confirmação explícita) e a checagem de posse por agendamento_id
+	// (cancelar/remarcar/confirmar).
+	registerAgendar(s, client)
+	registerCancelar(s, client)
+	registerRemarcar(s, client)
+	registerConfirmar(s, client)
+	registerCriarPaciente(s, client)
 }
 
 // registerAdminTools registers every tool exposed on the admin profile: the

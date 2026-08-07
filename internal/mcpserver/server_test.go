@@ -126,11 +126,11 @@ func (rt bearerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	return rt.base.RoundTrip(req)
 }
 
-// TestAtendimentoToolList_HasTheFourFase2Tools is the direct acceptance
-// criterion for Fase 2: the atendimento profile's tools/list contains
-// exactly the four read-only tools this phase adds, no more (writes are
-// Fase 3, admin-only tools are Fase 4).
-func TestAtendimentoToolList_HasTheFourFase2Tools(t *testing.T) {
+// TestAtendimentoToolList_HasTheNineFase3Tools is the direct acceptance
+// criterion for Fase 3: the atendimento profile's tools/list contains
+// exactly the four Fase 2 read-only tools plus the five Fase 3 write tools
+// this phase adds, no more (admin-only tools are Fase 4).
+func TestAtendimentoToolList_HasTheNineFase3Tools(t *testing.T) {
 	srv := httptest.NewServer(Handler())
 	defer srv.Close()
 
@@ -140,6 +140,11 @@ func TestAtendimentoToolList_HasTheFourFase2Tools(t *testing.T) {
 		"buscar_horarios_livres": true,
 		"identificar_paciente":   true,
 		"consultar_agenda":       true,
+		"agendar":                true,
+		"cancelar":               true,
+		"remarcar":               true,
+		"confirmar":              true,
+		"criar_paciente":         true,
 	}
 	if len(names) != len(want) {
 		t.Fatalf("atendimento tools/list = %v, want exactly %v", names, want)

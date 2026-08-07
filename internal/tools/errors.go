@@ -9,6 +9,7 @@ package tools
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/lab019/feegow-mcp/internal/feegow"
 )
@@ -90,4 +91,70 @@ func SanitizeFeegowError(err error) error {
 		return ErrEntradaInvalidaFeegow
 	}
 	return err
+}
+
+// ErrHorarioOcupado is the sanitized, ACTIONABLE stand-in for Feegow's
+// undocumented 409 "Já existe um agendamento para esse horario e
+// profissional" (confirmed against the real API by Fase 0) — a plain race:
+// buscar_horarios_livres reported the slot free, and someone else took it
+// between that read and this write. ESPECIFICACAO.md §7 regra 4 is explicit
+// that this is recoverable state, not a failure: the caller should offer
+// the patient different times, not just report "an error happened" the way
+// the opaque ErrConflitoFeegow would. See classifyAppointConflict, the
+// single place that distinguishes this from ErrPacienteJaTemAgendamento
+// below (same HTTP status, same envelope, different free-text Content —
+// conflating them would lose exactly the distinction this sentinel exists
+// for).
+var ErrHorarioOcupado = errors.New("feegow: esse horário acabou de ficar indisponível — outra pessoa agendou entre a consulta e a confirmação; ofereça outros horários ao paciente")
+
+// ErrPacienteJaTemAgendamento is the sanitized, ACTIONABLE stand-in for
+// Feegow's undocumented, and undocumented-anywhere-in-doc.txt, 409 "Esse
+// paciente já possui um agendamento nessa agenda." — confirmed by Fase 0.
+// Deliberately NOT the same sentinel as ErrHorarioOcupado: this is not a
+// race and has nothing to do with the specific horário requested — it
+// fires because the SAME paciente already has ANY other agendamento with
+// the SAME profissional, no matter when. "tente outro horário" is the
+// wrong advice for this one; the actionable fix is a different
+// profissional or dealing with the existing agendamento first (e.g.
+// remarcar it) — which is also why remarcar must call /appoints/reschedule
+// directly rather than "new-appoint then cancel-appoint": the new-appoint
+// half of that sequence would hit exactly this 409 before the old
+// agendamento is ever cancelled.
+var ErrPacienteJaTemAgendamento = errors.New("feegow: esse paciente já tem um agendamento com esse profissional — avise o paciente e sugira remarcar o existente ou escolher outro profissional")
+
+// conflictMsgHorarioOcupado and conflictMsgPacienteJaTem are the exact,
+// Fase-0-verified free-text Content strings Feegow's 409 carries for the
+// two conflicts above. Matched with strings.Contains rather than equality:
+// the verified strings are the load-bearing substrings, and matching on
+// them tolerates surrounding punctuation/whitespace this client has not
+// independently observed rather than silently falling through to the
+// opaque ErrConflitoFeegow the moment Feegow's wording shifts by a
+// character.
+const (
+	conflictMsgHorarioOcupado = "Já existe um agendamento para esse horario e profissional"
+	conflictMsgPacienteJaTem  = "Esse paciente já possui um agendamento nessa agenda"
+)
+
+// classifyAppointConflict is agendar and remarcar's single outermost
+// error-return choke point (mirroring SanitizeFeegowError's role for the
+// read tools): it recognizes the two Fase-0-verified 409 conflicts specific
+// to booking/moving an agendamento and maps them to their own actionable
+// sentinels above, before falling back to SanitizeFeegowError for every
+// other error (including every other 409 Content, and every 422) — those
+// still get the generic, PII-safe treatment. Never applied to cancelar or
+// confirmar: neither one creates or moves an agendamento, so neither of
+// these two specific conflicts is a real outcome for them — resolveOwnedAgendamento
+// (agendamento_escrita.go) already turns "id not mine" into ErrNaoLocalizado
+// before either tool's underlying Feegow call is ever made.
+func classifyAppointConflict(err error) error {
+	var conflict *feegow.ConflictError
+	if errors.As(err, &conflict) {
+		switch {
+		case strings.Contains(conflict.Content, conflictMsgHorarioOcupado):
+			return ErrHorarioOcupado
+		case strings.Contains(conflict.Content, conflictMsgPacienteJaTem):
+			return ErrPacienteJaTemAgendamento
+		}
+	}
+	return SanitizeFeegowError(err)
 }

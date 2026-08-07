@@ -270,10 +270,20 @@ func listPatients(ctx context.Context, client *feegow.Client, params map[string]
 // body. The caller-facing error is unaffected either way (still the same
 // ErrNaoLocalizado) — this only changes what an operator can see.
 func logShapeWarning(reason string) {
+	logShapeWarningFor("patient.list", reason, "identificar_paciente não consegue mais confirmar identidades")
+}
+
+// logShapeWarningFor is logShapeWarning's generalization, shared by every
+// tool in this package that needs to surface "an upstream Feegow response
+// no longer matches the shape this integration expects" to an operator —
+// e.g. agendar's decodeAgendamentoID (agendar.go). Same discipline: never
+// logs request or response data, only the fixed endpoint/reason/consequence
+// strings its caller passes in, per ESPECIFICACAO.md §10.
+func logShapeWarningFor(endpoint, reason, consequence string) {
 	if !loglevel.WarnEnabled() {
 		return
 	}
-	log.Printf("feegow: WARN patient.list — %s (identificar_paciente não consegue mais confirmar identidades)", reason)
+	log.Printf("feegow: WARN %s — %s (%s)", endpoint, reason, consequence)
 }
 
 // mapNotFound folds the two Feegow error shapes that mean "no such
