@@ -166,18 +166,39 @@ type EndpointDescriptor struct {
 	Pagination PaginationSpec
 	Envelope   EnvelopeKind
 
-	// MaxRangeMonths declares the widest Start–End window (in calendar
-	// months) this endpoint tolerates before Feegow itself rejects the
-	// request. Zero (the default) means no client-enforced limit. This
-	// exists specifically for /appoints/search, whose real, undocumented
-	// behavior (confirmed by the Fase 0 smoke test — see ESPECIFICACAO.md
-	// Fase 0 RELATORIO.md item a.4) is a 409 "Intervalo de data deve ser
-	// menor que 6 meses." for any wider window. Declared on the
-	// descriptor — not hard-coded to an endpoint ID — so
-	// validateDateRange (dates.go) stays as data-driven as applyDates and
-	// EncodePagination: any future endpoint that turns out to share this
-	// limit gets the same client-side guard for free.
-	MaxRangeMonths int
+	// MaxRangeDays declares the widest Start–End window (in calendar
+	// DAYS — not months, see below) this endpoint tolerates before Feegow
+	// itself rejects the request. Zero (the default) means no
+	// client-enforced limit. This exists specifically for
+	// /appoints/search, whose real, undocumented behavior is a 409
+	// "Intervalo de data deve ser menor que 6 meses." for any wider
+	// window.
+	//
+	// Despite that message, the limit Feegow actually ENFORCES is not
+	// calendar months at all: a second, targeted smoke test (5 probes,
+	// documented in the PR that introduced this field) measured the exact
+	// cutoff directly against the real API —
+	//
+	//	01-01-2026 .. 30-06-2026 (180 days) -> accepted
+	//	01-01-2026 .. 01-07-2026 (181 days) -> rejected
+	//	31-08-2026 .. 27-02-2027 (180 days) -> accepted
+	//	31-08-2026 .. 28-02-2027 (181 days) -> rejected
+	//	15-03-2026 .. 11-09-2026 (180 days) -> accepted
+	//	15-03-2026 .. 12-09-2026 (181 days) -> rejected
+	//	01-02-2026 .. 31-07-2026 (180 days) -> accepted
+	//
+	// i.e. exactly "end - start <= 180 days", independent of which
+	// calendar months are involved. A calendar-month guard (the previous
+	// implementation used start.AddDate(0, 6, 0)) is WRONG on both ends:
+	// AddDate normalizes month-end overflow (Aug 31 + 6 months rolls over
+	// to Mar 3, not Feb 28/29), making the client-side guard more
+	// permissive than the server for exactly the kind of window in the
+	// table above; and it is measured in months, a unit the server does
+	// not actually use. Declared on the descriptor — not hard-coded to an
+	// endpoint ID — so validateDateRange (dates.go) stays as data-driven
+	// as applyDates and EncodePagination: any future endpoint that turns
+	// out to share this limit gets the same client-side guard for free.
+	MaxRangeDays int
 
 	// Verified is false when doc.txt did not give this endpoint's
 	// translation with enough clarity to trust without a real-license
@@ -237,8 +258,8 @@ func (d EndpointDescriptor) Validate() error {
 		return fmt.Errorf("%s: declares DateRoleSingle alongside a Start/End range, which is not a shape any real Feegow endpoint has", d.ID)
 	}
 
-	if d.MaxRangeMonths < 0 {
-		return fmt.Errorf("%s: MaxRangeMonths must not be negative, got %d", d.ID, d.MaxRangeMonths)
+	if d.MaxRangeDays < 0 {
+		return fmt.Errorf("%s: MaxRangeDays must not be negative, got %d", d.ID, d.MaxRangeDays)
 	}
 
 	switch d.Pagination.Kind {

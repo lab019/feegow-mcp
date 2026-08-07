@@ -42,13 +42,17 @@ var Registry = map[EndpointID]EndpointDescriptor{
 		// Confirmed by the Fase 0 smoke test: a window of data_start=
 		// 01-01-2024 to data_end=31-12-2026 (3 years) returns 409
 		// "Intervalo de data deve ser menor que 6 meses." — undocumented
-		// in doc.txt. validateDateRange (dates.go) turns this into a
-		// DateRangeTooWideError before the request ever leaves this
-		// process, instead of a caller-facing 409 sanitized down to an
-		// opaque "houve um conflito" (see tools.SanitizeFeegowError).
-		MaxRangeMonths: 6,
-		Envelope:       EnvelopeStandard,
-		Verified:       true,
+		// in doc.txt. A follow-up targeted smoke test (5 probes bisecting
+		// the exact cutoff) confirmed the real rule is 180 calendar DAYS,
+		// not 6 calendar months — see MaxRangeDays' doc comment in
+		// types.go for the measurements. validateDateRange (dates.go)
+		// turns a too-wide window into a DateRangeTooWideError before the
+		// request ever leaves this process, instead of a caller-facing
+		// 409 sanitized down to an opaque "houve um conflito" (see
+		// tools.SanitizeFeegowError).
+		MaxRangeDays: 180,
+		Envelope:     EnvelopeStandard,
+		Verified:     true,
 		Notes: "Paginação (start/offset) só foi observada com list_procedures=1 nos testes manuais " +
 			"originais; a Fase 0 tentou isolar isso com uma janela válida (01-01-2026 a 01-03-2026) " +
 			"mas a sandbox não tinha agendamentos nessa janela — o campo \"total\" apareceu com E sem " +
@@ -589,23 +593,34 @@ var Registry = map[EndpointID]EndpointDescriptor{
 	// "The GET method is not supported for this route. Supported
 	// methods: POST." (real-error 422 shape, not RouteNotFoundError).
 	// POST with the same params → 200 (with a bogus agendamento_id=1 the
-	// response body was {"success":false,"message":"..."} — an internal
-	// Feegow error for a nonexistent agendamento, not the {success,
-	// content} envelope; a real success response was not observed, so the
-	// exact success shape is unconfirmed even though method+path are).
+	// response body was {"success":false,"message":"..."} — confirmed by
+	// resultados.json's medical-reports/create#POST-with-body record:
+	// top_level_keys ["success","message"], has_success_content_envelope
+	// false. That is NOT the {success,content} envelope this package calls
+	// EnvelopeStandard, so EnvelopeStandard here would make parseSuccess
+	// look for a "content" field that was never sent, fall through to its
+	// empty fallback and silently discard Feegow's actual message inside
+	// a ConflictError{Content: ""}. EnvelopeNone (like
+	// patient.check_eligibility above) is the honest choice: it never
+	// assumes a wrapper shape, so it stays correct even though a genuine
+	// success response was never observed — the caller (Fase 2+ tool)
+	// inspects "success"/"message" in the raw body itself.
 	"medical_reports.create": {
 		ID:       "medical_reports.create",
 		Host:     HostAPI,
 		Method:   http.MethodPost,
 		Path:     "/medical-reports/create",
-		Envelope: EnvelopeStandard,
+		Envelope: EnvelopeNone,
 		Verified: true,
 		Notes: "Doc bug conhecido: o título de doc.txt diz \"POST /medical-reports/create\", mas o " +
 			"exemplo de URL usa GET. Confirmado pela Fase 0: GET → 422 \"The GET method is not " +
 			"supported for this route. Supported methods: POST.\"; POST é aceito (200 com " +
 			"agendamento_id inexistente devolveu {\"success\":false,\"message\":\"...\"} — um erro " +
-			"interno do Feegow para agendamento inexistente, não o envelope {success,content} " +
-			"padrão; uma resposta de sucesso real não foi observada). Method e Path confirmados.",
+			"interno do Feegow para agendamento inexistente). Method, Path e Envelope=EnvelopeNone " +
+			"estão confirmados pelo corpo real (NÃO usa o envelope {success,content} padrão, apesar " +
+			"de ter um campo \"success\" — mesma situação de patient.check_eligibility acima); uma " +
+			"resposta de sucesso real não foi observada, então o shape exato do conteúdo em caso de " +
+			"sucesso continua desconhecido — EnvelopeNone não depende disso, só repassa o corpo cru.",
 	},
 
 	// financial.find_invoice_by_nfse ("Obter invoices por nota fiscal") —
@@ -621,7 +636,7 @@ var Registry = map[EndpointID]EndpointDescriptor{
 		Method:   http.MethodPost,
 		Path:     "/financial/find-invoice-by-nfse-number",
 		Envelope: EnvelopeStandard,
-		Verified: true,
+		Verified: false,
 		Notes: "Doc bug conhecido: doc.txt documenta como GET; confirmado pela Fase 0 que é POST " +
 			"(\"The GET method is not supported for this route. Supported methods: POST.\"). Campo " +
 			"do corpo é \"nfse_numero\" (confirmado por 422 real {\"nfse_numero\":[...]}), NÃO " +

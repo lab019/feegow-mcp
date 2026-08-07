@@ -33,31 +33,62 @@ func parseISODate(role DateRole, value string) (time.Time, error) {
 }
 
 // DateRangeTooWideError is returned when a caller's Start–End window is
-// wider than the endpoint's declared MaxRangeMonths — checked before any
+// wider than the endpoint's declared MaxRangeDays — checked before any
 // HTTP request is built, exactly like InvalidDateError, so a too-wide
 // window never turns into Feegow's undocumented 409 "Intervalo de data
 // deve ser menor que 6 meses." (confirmed against the real API for
-// /appoints/search — see ESPECIFICACAO.md Fase 0 RELATORIO.md item a.4).
-// A 409 sanitized by tools.SanitizeFeegowError reads as an opaque
-// "conflito ao processar a solicitação"; this error instead names the
-// actual, fixable problem, in Portuguese, before any network call is
-// made.
+// /appoints/search). The limit is tracked and enforced in DAYS, not
+// months — see MaxRangeDays' doc comment in types.go for the empirical
+// measurement backing that. A 409 sanitized by tools.SanitizeFeegowError
+// reads as an opaque "conflito ao processar a solicitação"; this error
+// instead names the actual, fixable problem, in Portuguese, before any
+// network call is made.
 type DateRangeTooWideError struct {
-	MaxRangeMonths int
+	MaxRangeDays int
 }
 
 func (e *DateRangeTooWideError) Error() string {
-	return fmt.Sprintf("feegow: o período consultado precisa ser menor que %d meses", e.MaxRangeMonths)
+	return fmt.Sprintf(
+		"feegow: o período consultado precisa ter no máximo %d dias corridos "+
+			"(a Feegow relata isso como \"menor que 6 meses\", mas o limite real, medido "+
+			"contra a API, é em dias corridos — ver MaxRangeDays em types.go)",
+		e.MaxRangeDays,
+	)
 }
 
-// validateDateRange enforces d.MaxRangeMonths against req's DateStart/
+// DateRangeInvertedError is returned when a caller's Start–End window has
+// End before Start — a caller bug (e.g. swapped arguments) that would
+// otherwise sail through validateDateRange's width check (any inverted
+// window is, trivially, "narrower" than any positive limit) and reach
+// Feegow as a nonsensical request. Checked before any HTTP request is
+// built, exactly like DateRangeTooWideError.
+type DateRangeInvertedError struct {
+	Start, End string // the original ISO-8601 strings, for a readable message
+}
+
+func (e *DateRangeInvertedError) Error() string {
+	return fmt.Sprintf(
+		"feegow: data de início (%s) é posterior à data de fim (%s) — período invertido",
+		e.Start, e.End,
+	)
+}
+
+// validateDateRange enforces d.MaxRangeDays against req's DateStart/
 // DateEnd pair before any wire translation happens. Declarative, not
-// endpoint-specific — see MaxRangeMonths' doc comment in types.go: it
-// only fires when both dates are supplied and the descriptor declares a
+// endpoint-specific — see MaxRangeDays' doc comment in types.go: it only
+// fires when both dates are supplied and the descriptor declares a
 // limit, and is silent (nil) otherwise, matching applyDates' "dates are
 // always optional at the transport level" contract.
+//
+// The width check is plain day-count subtraction (end.Sub(start)), not
+// calendar-field arithmetic: parseISODate always produces UTC midnight
+// values for date-only ISO-8601 input, so the duration in hours divides
+// evenly into days with no DST or leap-year special-casing needed — the
+// exact class of calendar edge case (month-end overflow via AddDate) that
+// made the previous month-based guard wrong. See MaxRangeDays in
+// types.go for the measurements this cutoff is based on.
 func validateDateRange(d EndpointDescriptor, req Request) error {
-	if d.MaxRangeMonths <= 0 || req.DateStart == nil || req.DateEnd == nil {
+	if d.MaxRangeDays <= 0 || req.DateStart == nil || req.DateEnd == nil {
 		return nil
 	}
 	start, err := parseISODate(DateRoleStart, *req.DateStart)
@@ -68,8 +99,12 @@ func validateDateRange(d EndpointDescriptor, req Request) error {
 	if err != nil {
 		return err
 	}
-	if end.After(start.AddDate(0, d.MaxRangeMonths, 0)) {
-		return &DateRangeTooWideError{MaxRangeMonths: d.MaxRangeMonths}
+	if end.Before(start) {
+		return &DateRangeInvertedError{Start: *req.DateStart, End: *req.DateEnd}
+	}
+	days := int(end.Sub(start).Hours() / 24)
+	if days > d.MaxRangeDays {
+		return &DateRangeTooWideError{MaxRangeDays: d.MaxRangeDays}
 	}
 	return nil
 }

@@ -94,6 +94,37 @@ func TestCall_EnvelopeNone_RawBodyReturned(t *testing.T) {
 	}
 }
 
+// TestCall_MedicalReportsCreate_200SuccessFalse_MessagePreserved is a
+// regression test for the registry.go entry that used to declare
+// medical_reports.create as EnvelopeStandard. Feegow's real 200 body for
+// this endpoint is {"success":false,"message":"..."} — no "content" field
+// at all (confirmed by the Fase 0 resultados.json record for
+// medical-reports/create#POST-with-body). With EnvelopeStandard,
+// parseSuccess looks for "content", finds nothing, and returns a
+// *ConflictError with an EMPTY Content — Feegow's actual message is
+// silently discarded. With the corrected EnvelopeNone, the whole raw body
+// (message included) comes back verbatim as Response.Content instead of
+// being swallowed into an error with no information in it.
+func TestCall_MedicalReportsCreate_200SuccessFalse_MessagePreserved(t *testing.T) {
+	const rawBody = `{"success":false,"message":"Trying to access array offset on value of type bool"}`
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/medical-reports/create", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, rawBody)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.Client(), srv.URL)
+	resp, err := c.Call(ctxWithToken("tok"), "medical_reports.create", Request{})
+	if err != nil {
+		t.Fatalf("Call: got error %v, want the raw body back (EnvelopeNone never treats success:false as a transport error)", err)
+	}
+	if string(resp.Content) != rawBody {
+		t.Fatalf("Content = %s, want the raw body verbatim (with the real message intact): %s", resp.Content, rawBody)
+	}
+}
+
 // TestCall_409ConflictError_Distinguishable is acceptance criteria 5 and
 // 6's 409 half: a 409 with the standard envelope becomes a *ConflictError
 // carrying Feegow's message, and it must NOT also satisfy *ValidationError
@@ -603,9 +634,9 @@ func TestCall_POSTSendsJSONBody(t *testing.T) {
 }
 
 // TestCall_DateRangeTooWide_RejectedBeforeRequest is the client-level half
-// of the /appoints/search 6-month guard the Fase 0 smoke test confirmed
-// against the real API (409 "Intervalo de data deve ser menor que 6
-// meses."): a window wider than MaxRangeMonths must be rejected as a
+// of the /appoints/search date-range guard the Fase 0 smoke test
+// confirmed against the real API (409 "Intervalo de data deve ser menor
+// que 6 meses."): a window wider than MaxRangeDays must be rejected as a
 // *DateRangeTooWideError BEFORE any HTTP request is built — the handler
 // below fails the test if it's ever reached, proving the rejection really
 // happens client-side, not just that the error type happens to match.
@@ -619,7 +650,7 @@ func TestCall_DateRangeTooWide_RejectedBeforeRequest(t *testing.T) {
 
 	c := New(srv.Client(), srv.URL)
 	start := "2024-01-01"
-	end := "2026-12-31" // 3 years — well past the 6-month limit
+	end := "2026-12-31" // 3 years — well past the 180-day limit
 	_, err := c.Call(ctxWithToken("tok"), "appoints.search", Request{
 		DateStart: &start,
 		DateEnd:   &end,
@@ -632,16 +663,16 @@ func TestCall_DateRangeTooWide_RejectedBeforeRequest(t *testing.T) {
 	if !errors.As(err, &rangeErr) {
 		t.Fatalf("error is not a *DateRangeTooWideError: %v (%T)", err, err)
 	}
-	if rangeErr.MaxRangeMonths != 6 {
-		t.Fatalf("MaxRangeMonths = %d, want 6", rangeErr.MaxRangeMonths)
+	if rangeErr.MaxRangeDays != 180 {
+		t.Fatalf("MaxRangeDays = %d, want 180", rangeErr.MaxRangeDays)
 	}
-	if !strings.Contains(err.Error(), "6 meses") {
+	if !strings.Contains(err.Error(), "180") {
 		t.Fatalf("error message %q does not mention the actual limit in a readable way", err.Error())
 	}
 }
 
 // TestCall_DateRangeWithinLimit_ReachesServer is the positive control: a
-// window at or within MaxRangeMonths must NOT be rejected client-side.
+// window at or within MaxRangeDays must NOT be rejected client-side.
 func TestCall_DateRangeWithinLimit_ReachesServer(t *testing.T) {
 	called := false
 	mux := http.NewServeMux()
@@ -654,7 +685,7 @@ func TestCall_DateRangeWithinLimit_ReachesServer(t *testing.T) {
 
 	c := New(srv.Client(), srv.URL)
 	start := "2026-01-01"
-	end := "2026-03-01" // 2 months — within the 6-month limit
+	end := "2026-03-01" // 2 months — within the 180-day limit
 	_, err := c.Call(ctxWithToken("tok"), "appoints.search", Request{
 		DateStart: &start,
 		DateEnd:   &end,
@@ -664,5 +695,126 @@ func TestCall_DateRangeWithinLimit_ReachesServer(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("request never reached the server — a within-limit window must not be rejected")
+	}
+}
+
+// TestCall_DateRangeExactly180Days_ReachesServer and
+// TestCall_DateRangeExactly181Days_Rejected pin the exact cutoff the Fase
+// 0 follow-up smoke test measured against the real API for
+// /appoints/search: 01-01-2026 to 30-06-2026 is 180 days (accepted by
+// Feegow) and one day more, to 01-07-2026, is 181 days (rejected). Before
+// the MaxRangeDays fix, the old month-based guard
+// (end.After(start.AddDate(0,6,0))) used time.Time.After — a STRICT
+// comparison — so exactly 6 months (which happens to land on 01-07-2026
+// here) was treated as within range by the client despite the server
+// rejecting it; these two tests prove the day-based guard now agrees with
+// the server exactly at the boundary in both directions.
+func TestCall_DateRangeExactly180Days_ReachesServer(t *testing.T) {
+	called := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("/appoints/search", func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		writeJSON(t, w, http.StatusOK, `{"success":true,"content":[]}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.Client(), srv.URL)
+	start := "2026-01-01"
+	end := "2026-06-30" // exactly 180 days — accepted by the real API
+	_, err := c.Call(ctxWithToken("tok"), "appoints.search", Request{
+		DateStart: &start,
+		DateEnd:   &end,
+	})
+	if err != nil {
+		t.Fatalf("Call: %v, want the request to reach the server (180 days is the accepted boundary)", err)
+	}
+	if !called {
+		t.Fatal("request never reached the server — exactly 180 days must not be rejected client-side")
+	}
+}
+
+func TestCall_DateRangeExactly181Days_Rejected(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/appoints/search", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("request reached the server — 181 days must be rejected before any HTTP call")
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.Client(), srv.URL)
+	start := "2026-01-01"
+	end := "2026-07-01" // exactly 181 days — rejected by the real API
+	_, err := c.Call(ctxWithToken("tok"), "appoints.search", Request{
+		DateStart: &start,
+		DateEnd:   &end,
+	})
+	var rangeErr *DateRangeTooWideError
+	if !errors.As(err, &rangeErr) {
+		t.Fatalf("error is not a *DateRangeTooWideError: %v (%T)", err, err)
+	}
+}
+
+// TestCall_DateRangeMonthEndOverflow_Rejected is the regression test for
+// the calendar-arithmetic bug the day-based rewrite fixes: with the old
+// start.AddDate(0, 6, 0) guard, Aug 31 + 6 months normalizes past
+// February's short month all the way to Mar 3 (2027 is not a leap year),
+// so an end date of Feb 28 was treated as within range client-side even
+// though it is 181 real days after Aug 31 — a window the real API
+// rejects. The day-based guard must reject it too.
+func TestCall_DateRangeMonthEndOverflow_Rejected(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/appoints/search", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("request reached the server — the month-end-overflow window (181 real days) must be rejected before any HTTP call")
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.Client(), srv.URL)
+	start := "2026-08-31"
+	end := "2027-02-28" // 181 days after Aug 31 — rejected by the real API,
+	// but AddDate(0,6,0) on 2026-08-31 overflows to 2027-03-03, which is
+	// AFTER 2027-02-28 — the old guard would have let this reach the server.
+	_, err := c.Call(ctxWithToken("tok"), "appoints.search", Request{
+		DateStart: &start,
+		DateEnd:   &end,
+	})
+	var rangeErr *DateRangeTooWideError
+	if !errors.As(err, &rangeErr) {
+		t.Fatalf("error is not a *DateRangeTooWideError: %v (%T)", err, err)
+	}
+}
+
+// TestCall_DateRangeInverted_Rejected is the regression test for Achado 3:
+// validateDateRange did not check Start <= End at all, so a caller-supplied
+// inverted window (End before Start) sailed through the width guard
+// (trivially "narrower" than any positive limit) and would have reached
+// Feegow as a nonsensical request instead of failing fast with a readable
+// error.
+func TestCall_DateRangeInverted_Rejected(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/appoints/search", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("request reached the server — an inverted date range must be rejected before any HTTP call")
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.Client(), srv.URL)
+	start := "2026-06-01"
+	end := "2026-01-01" // End before Start
+	_, err := c.Call(ctxWithToken("tok"), "appoints.search", Request{
+		DateStart: &start,
+		DateEnd:   &end,
+	})
+	if err == nil {
+		t.Fatal("Call: got nil error, want a DateRangeInvertedError")
+	}
+
+	var invertedErr *DateRangeInvertedError
+	if !errors.As(err, &invertedErr) {
+		t.Fatalf("error is not a *DateRangeInvertedError: %v (%T)", err, err)
+	}
+	if invertedErr.Start != start || invertedErr.End != end {
+		t.Fatalf("DateRangeInvertedError = {Start:%q End:%q}, want {Start:%q End:%q}", invertedErr.Start, invertedErr.End, start, end)
 	}
 }
