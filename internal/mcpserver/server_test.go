@@ -171,7 +171,7 @@ func TestAtendimentoToolList_HasTheNineFase3Tools(t *testing.T) {
 // unambiguously a leak, regardless of what else atendimento does or does
 // not expose. Kept in sync with registerAdminOnlyTools
 // (internal/mcpserver/tools_admin.go) and the admin-only half of
-// TestAdminToolList_HasTheFase4aAndFase4bAdminOnlyTools's `want` below.
+// TestAdminToolList_HasTheFase4aThrough4cAdminOnlyTools's `want` below.
 var adminOnlyToolNames = map[string]bool{
 	// Fase 4a
 	"buscar_pacientes":             true,
@@ -188,6 +188,14 @@ var adminOnlyToolNames = map[string]bool{
 	"remover_registro_financeiro": true,
 	"consultar_estoque":           true,
 	"movimentar_estoque":          true,
+	// Fase 4c
+	"gerenciar_propostas":   true,
+	"consultar_laudos":      true,
+	"registrar_laudo":       true,
+	"gerenciar_faturamento": true,
+	"listar_relatorios":     true,
+	"gerar_relatorio":       true,
+	"listar_funcionarios":   true,
 }
 
 // TestAtendimentoToolList_NeverContainsAdminOnlyTools is acceptance
@@ -209,15 +217,15 @@ func TestAtendimentoToolList_NeverContainsAdminOnlyTools(t *testing.T) {
 	}
 }
 
-// TestAdminToolList_HasTheFase4aAndFase4bAdminOnlyTools is the direct
-// acceptance criterion for Fase 4a+4b: the admin profile's tools/list
+// TestAdminToolList_HasTheFase4aThrough4cAdminOnlyTools is the direct
+// acceptance criterion for Fase 4a+4b+4c: the admin profile's tools/list
 // contains exactly the nine atendimento tools, plus the seven Fase 4a
 // paciente/agenda admin-only tools, plus the six Fase 4b financeiro/estoque
-// admin-only tools — no more (propostas, laudos, faturamento, relatórios
-// and funcionários remain out of scope). Superseded from
-// TestAdminToolList_HasTheSevenFase4aAdminOnlyTools, whose own doc comment
-// already flagged this exact expansion as coming in Fase 4b.
-func TestAdminToolList_HasTheFase4aAndFase4bAdminOnlyTools(t *testing.T) {
+// admin-only tools, plus the seven Fase 4c propostas/laudos/faturamento/
+// relatórios/funcionários admin-only tools — no more. Superseded from
+// TestAdminToolList_HasTheFase4aAndFase4bAdminOnlyTools, whose own doc
+// comment already flagged this exact expansion as coming in Fase 4c.
+func TestAdminToolList_HasTheFase4aThrough4cAdminOnlyTools(t *testing.T) {
 	srv := httptest.NewServer(AdminHandler())
 	defer srv.Close()
 
@@ -248,6 +256,14 @@ func TestAdminToolList_HasTheFase4aAndFase4bAdminOnlyTools(t *testing.T) {
 		"remover_registro_financeiro": true,
 		"consultar_estoque":           true,
 		"movimentar_estoque":          true,
+		// Fase 4c admin-only tools.
+		"gerenciar_propostas":   true,
+		"consultar_laudos":      true,
+		"registrar_laudo":       true,
+		"gerenciar_faturamento": true,
+		"listar_relatorios":     true,
+		"gerar_relatorio":       true,
+		"listar_funcionarios":   true,
 	}
 	if len(names) != len(want) {
 		t.Fatalf("admin tools/list = %v (%d tools), want exactly %d tools", names, len(names), len(want))

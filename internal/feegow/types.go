@@ -259,8 +259,20 @@ func (d EndpointDescriptor) Validate() error {
 		// Feegow actually registered. Client.buildRequest already sends
 		// whatever d.Method says with a JSON body for any non-GET method, so
 		// no transport change was needed — only this allow-list.
+	case http.MethodPut:
+		// Confirmed by the Fase 4c smoke test: PUT /billing/insurances-billing
+		// ("Editar Guia") genuinely accepts PUT, with a 422 naming its own
+		// two required fields (billing_id, billing_type_id) — distinct from
+		// what an empty GET (billing_type_id, billing — "Buscar Guia") or an
+		// empty POST (16 fields — "Inserir Guia") name at the exact same
+		// path. This is the only path in this registry that serves three
+		// different operations under three different HTTP methods.
+		// Client.buildRequest already sends whatever d.Method says with a
+		// JSON body for any non-GET method, so no transport change was
+		// needed — only this allow-list, same shape as the DELETE case
+		// above.
 	default:
-		return fmt.Errorf("%s: Method must be GET, POST or DELETE, got %q", d.ID, d.Method)
+		return fmt.Errorf("%s: Method must be GET, POST, PUT or DELETE, got %q", d.ID, d.Method)
 	}
 	if !strings.HasPrefix(d.Path, "/") {
 		return fmt.Errorf("%s: Path %q must start with \"/\"", d.ID, d.Path)

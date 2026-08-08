@@ -20,19 +20,25 @@ func (e *ConflictError) Error() string {
 
 // ValidationError is a real Feegow 422 — a validation failure on a
 // well-formed request against a route that does exist. It carries
-// whichever of the two shapes doc.txt (and the Fase 0 smoke test against
+// whichever of the shapes doc.txt (and the Fase 0/4c smoke tests against
 // the real API) confirmed this API actually uses for that:
 //
 //   - Fields: a bare Laravel-style map, e.g.
-//     {"paciente_id": ["validation.required"]} — NO envelope at all.
-//   - Message: the other 422 shape, {"success":false,"cod_erro":N,
-//     "message":"..."} with a non-empty message (e.g. "The GET method is
-//     not supported for this route. Supported methods: POST.").
+//     {"paciente_id": ["validation.required"]} — NO envelope at all; OR
+//     that same field->messages map nested one level inside "message"
+//     (/medical-reports/search, /medical-reports/create) or "content"
+//     (/medical-reports/get-labs-report-file) — see classify422's doc
+//     comment (client.go) for the exact measured bodies. All three land
+//     in Fields identically; a caller never needs to know which of the
+//     three shapes the wire actually used.
+//   - Message: the flat 422 shape, {"success":false,"cod_erro":N,
+//     "message":"..."} with a non-empty STRING message (e.g. "The GET
+//     method is not supported for this route. Supported methods: POST.").
 //
-// Exactly one of the two is populated per instance — classify422
+// Exactly one of Fields/Message is populated per instance — classify422
 // (client.go) is the only place that constructs this type. See
 // RouteNotFoundError for the sibling shape this is deliberately NOT: the
-// same envelope with an EMPTY message, which means the route itself
+// same flat envelope with an EMPTY message, which means the route itself
 // doesn't exist and is never a caller-input problem.
 type ValidationError struct {
 	Fields  map[string][]string

@@ -42,6 +42,13 @@ func registerAdminOnlyTools(s *mcp.Server, client *feegow.Client) {
 	registerRemoverRegistroFinanceiro(s, client)
 	registerConsultarEstoque(s, client)
 	registerMovimentarEstoque(s, client)
+	registerGerenciarPropostas(s, client)
+	registerConsultarLaudos(s, client)
+	registerRegistrarLaudo(s, client)
+	registerGerenciarFaturamento(s, client)
+	registerListarRelatorios(s, client)
+	registerGerarRelatorio(s, client)
+	registerListarFuncionarios(s, client)
 }
 
 // registerBuscarPacientes registers buscar_pacientes: free-form patient
@@ -316,6 +323,143 @@ func registerMovimentarEstoque(s *mcp.Server, client *feegow.Client) {
 		result, err := tools.MovimentarEstoque(ctx, client, args)
 		if err != nil {
 			return nil, tools.MovimentarEstoqueResult{}, err
+		}
+		return nil, *result, nil
+	})
+}
+
+// registerGerenciarPropostas registers gerenciar_propostas: listar,
+// listar_por_data, criar, mudar_status, obter_url — ver
+// internal/tools/propostas.go para o contrato de cada acao.
+// acao=listar_por_data é reconhecida mas SEMPRE indisponível — toda
+// combinação de parâmetro de data testada pela Fase 4c contra
+// /proposal/list-dates devolveu o mesmo 400 genérico.
+func registerGerenciarPropostas(s *mcp.Server, client *feegow.Client) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "gerenciar_propostas",
+		Description: "Gerencia propostas comerciais da clínica: listar (por paciente_id ou por " +
+			"data_inicio/data_fim), criar, mudar_status, obter_url (URL pública da proposta). Exige " +
+			"confirmação EXPLÍCITA do OPERADOR da clínica (confirmacao=true) para criar e " +
+			"mudar_status — nunca assumida pelo agente/modelo. \"listar_por_data\" é reconhecida mas " +
+			"SEMPRE indisponível — o endpoint correspondente respondeu de forma genérica e " +
+			"inconsistente em toda sondagem contra a API da Feegow.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.GerenciarPropostasArgs) (*mcp.CallToolResult, tools.GerenciarPropostasResult, error) {
+		result, err := tools.GerenciarPropostas(ctx, client, args)
+		if err != nil {
+			return nil, tools.GerenciarPropostasResult{}, err
+		}
+		return nil, *result, nil
+	})
+}
+
+// registerConsultarLaudos registers consultar_laudos: obter_arquivo,
+// visualizar (leituras). acao=listar é reconhecida mas SEMPRE indisponível
+// — ver internal/tools/laudos_consulta.go's doc comment. LAUDO É DADO
+// CLÍNICO: esta tool retorna o mínimo útil e nunca despeja conteúdo de
+// laudo em log.
+func registerConsultarLaudos(s *mcp.Server, client *feegow.Client) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "consultar_laudos",
+		Description: "Consulta laudos: obter_arquivo (arquivo de laudo laboratorial por " +
+			"lab_report_id) e visualizar (laudo registrado por agendamento_id). \"listar\" é " +
+			"reconhecida mas SEMPRE indisponível — o endpoint correspondente devolveu o mesmo erro " +
+			"genérico em toda sondagem contra a API da Feegow, sem revelar o nome real do parâmetro " +
+			"de data. Laudo é dado clínico: os resultados nunca são registrados em log.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.ConsultarLaudosArgs) (*mcp.CallToolResult, tools.ConsultarLaudosResult, error) {
+		result, err := tools.ConsultarLaudos(ctx, client, args)
+		if err != nil {
+			return nil, tools.ConsultarLaudosResult{}, err
+		}
+		return nil, *result, nil
+	})
+}
+
+// registerRegistrarLaudo registers registrar_laudo: grava um laudo no
+// prontuário de um paciente via agendamento_id, isolada de consultar_laudos
+// por ser uma escrita em dado clínico — ver
+// internal/tools/laudos_registro.go. Exige confirmação EXPLÍCITA do
+// OPERADOR da clínica (confirmacao=true).
+func registerRegistrarLaudo(s *mcp.Server, client *feegow.Client) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "registrar_laudo",
+		Description: "Registra um laudo (base64) no prontuário do paciente associado a um " +
+			"agendamento. Exige confirmação EXPLÍCITA do OPERADOR da clínica (confirmacao=true) — " +
+			"nunca assumida pelo agente/modelo. Laudo é dado clínico: o conteúdo nunca é registrado " +
+			"em log.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.RegistrarLaudoArgs) (*mcp.CallToolResult, tools.RegistrarLaudoResult, error) {
+		result, err := tools.RegistrarLaudo(ctx, client, args)
+		if err != nil {
+			return nil, tools.RegistrarLaudoResult{}, err
+		}
+		return nil, *result, nil
+	})
+}
+
+// registerGerenciarFaturamento registers gerenciar_faturamento: buscar
+// (leitura), editar e inserir_guia (escritas, exigem confirmacao=true) —
+// as três operações do único path do inventário servido sob três métodos
+// HTTP diferentes (GET/PUT/POST). Ver internal/tools/faturamento.go para o
+// porquê dos campos de inserir_guia serem expostos como valor livre (any).
+func registerGerenciarFaturamento(s *mcp.Server, client *feegow.Client) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "gerenciar_faturamento",
+		Description: "Gerencia guias de faturamento por convênio: buscar (leitura, por " +
+			"billing_type_id + billing), editar (por billing_id + billing_type_id) e inserir_guia " +
+			"(16 campos obrigatórios — ver o schema desta tool). Exige confirmação EXPLÍCITA do " +
+			"OPERADOR da clínica (confirmacao=true) para editar e inserir_guia — nunca assumida " +
+			"pelo agente/modelo.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.GerenciarFaturamentoArgs) (*mcp.CallToolResult, tools.GerenciarFaturamentoResult, error) {
+		result, err := tools.GerenciarFaturamento(ctx, client, args)
+		if err != nil {
+			return nil, tools.GerenciarFaturamentoResult{}, err
+		}
+		return nil, *result, nil
+	})
+}
+
+// registerListarRelatorios registers listar_relatorios: catálogo de
+// relatórios que a clínica pode gerar via gerar_relatorio.
+func registerListarRelatorios(s *mcp.Server, client *feegow.Client) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "listar_relatorios",
+		Description: "Lista os relatórios disponíveis para geração (id, categoria, nome, slug \"Arquivo\" usado por gerar_relatorio, status).",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, tools.ListarRelatoriosResult, error) {
+		result, err := tools.ListarRelatorios(ctx, client)
+		if err != nil {
+			return nil, tools.ListarRelatoriosResult{}, err
+		}
+		return nil, *result, nil
+	})
+}
+
+// registerGerarRelatorio registers gerar_relatorio: executa um relatório
+// (por "report", o slug "Arquivo" de listar_relatorios). NÃO exige
+// confirmação — não cria/edita/apaga nenhum registro da clínica, ver
+// internal/tools/relatorios.go's doc comment.
+func registerGerarRelatorio(s *mcp.Server, client *feegow.Client) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "gerar_relatorio",
+		Description: "Gera um relatório pelo slug \"report\" (ver listar_relatorios). Um \"report\" " +
+			"que não corresponde a nenhum relatório real devolve um resultado vazio, não um erro.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.GerarRelatorioArgs) (*mcp.CallToolResult, tools.GerarRelatorioResult, error) {
+		result, err := tools.GerarRelatorio(ctx, client, args)
+		if err != nil {
+			return nil, tools.GerarRelatorioResult{}, err
+		}
+		return nil, *result, nil
+	})
+}
+
+// registerListarFuncionarios registers listar_funcionarios: lista os
+// funcionários cadastrados na clínica.
+func registerListarFuncionarios(s *mcp.Server, client *feegow.Client) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "listar_funcionarios",
+		Description: "Lista os funcionários cadastrados na clínica.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, tools.ListarFuncionariosResult, error) {
+		result, err := tools.ListarFuncionarios(ctx, client)
+		if err != nil {
+			return nil, tools.ListarFuncionariosResult{}, err
 		}
 		return nil, *result, nil
 	})

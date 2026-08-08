@@ -277,9 +277,9 @@ func classifyError(status int, body []byte) error {
 	}
 }
 
-// classify422 tells apart the two shapes a 422 arrives in (see
-// ValidationError and RouteNotFoundError's doc comments in errors.go),
-// confirmed against the real API by the Fase 0 smoke test:
+// classify422 tells apart the shapes a 422 arrives in (see ValidationError
+// and RouteNotFoundError's doc comments in errors.go), confirmed against
+// the real API by the Fase 0 and Fase 4c smoke tests:
 //
 //  1. {"campo": ["mensagem", ...], ...} — a bare Laravel-style map, no
 //     envelope. A real per-field validation failure.
@@ -288,13 +288,62 @@ func classifyError(status int, body []byte) error {
 //     method is not supported for this route...") AND, with an EMPTY
 //     message, as the fingerprint of a route/method that does not exist
 //     at all: this API answers a wrong path with 422, not 404.
+//  3. {"success": false, "message": {"campo": ["mensagem", ...], ...}} —
+//     the SAME per-field validation map as shape 1, but nested one level
+//     inside "message" instead of sitting bare at the top. Measured by
+//     the Fase 4c smoke test against /medical-reports/search (missing
+//     agendamento_id) and /medical-reports/create (missing
+//     agendamento_id/laudo_base64). Because ValidationError.Message is a
+//     *string, unmarshaling this shape the same way shape 2 does fails
+//     silently (env.Message stays nil, since a JSON object can't decode
+//     into a *string) and used to fall through to the generic,
+//     field-name-less UnexpectedStatusError — never leaking the raw body
+//     (SanitizeFeegowError never even sees it), but throwing away exactly
+//     the field names that would help a caller fix the request.
+//  4. {"success": true, "content": {"campo": ["mensagem", ...], ...}} — the
+//     same nested-map idea as shape 3, but under "content" instead of
+//     "message", and with "success" left at its normal true value despite
+//     this being a real 422. Measured by the Fase 4c smoke test against
+//     /medical-reports/get-labs-report-file (missing lab_report_id). Since
+//     classifyError only reaches classify422 by HTTP status code (422),
+//     the misleading success:true here is irrelevant to the classification
+//     — see EnvelopeKind's doc comment on why 2xx and error bodies are
+//     handled independently.
 //
-// Anything that matches neither shape falls back to UnexpectedStatusError
-// rather than guessing.
+// Shapes 3 and 4 both resolve to the same *ValidationError{Fields: ...} as
+// shape 1 — from a caller's point of view this is the identical outcome
+// (a field->messages map), just found one level deeper on the wire.
+// Anything that matches none of the four falls back to
+// UnexpectedStatusError rather than guessing.
 func classify422(body []byte) error {
 	var fields map[string][]string
 	if err := json.Unmarshal(body, &fields); err == nil && len(fields) > 0 {
 		return &ValidationError{Fields: fields}
+	}
+
+	// Shapes 3 and 4: the field->messages map nested one level inside
+	// "message" or "content". Tried before the flat *string check below,
+	// since a wrapper key holding an object (this case) must never be
+	// mistaken for one holding a plain string message (shape 2) or the
+	// RouteNotFoundError fingerprint (shape 2 with an empty string) — an
+	// object simply fails to unmarshal into map[string][]string when it
+	// isn't shaped like one, so this loop is a no-op for every other 422
+	// shape in this function, including the empty-string fingerprint
+	// (a JSON string "" fails to unmarshal into a map, same as any other
+	// string does).
+	for _, wrapperKey := range [...]string{"message", "content"} {
+		var wrapper map[string]json.RawMessage
+		if err := json.Unmarshal(body, &wrapper); err != nil {
+			continue
+		}
+		raw, ok := wrapper[wrapperKey]
+		if !ok {
+			continue
+		}
+		var nested map[string][]string
+		if err := json.Unmarshal(raw, &nested); err == nil && len(nested) > 0 {
+			return &ValidationError{Fields: nested}
+		}
 	}
 
 	var env struct {

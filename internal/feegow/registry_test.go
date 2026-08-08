@@ -165,11 +165,15 @@ func TestEndpointDescriptor_Validate_CatchesIncompleteTranslation(t *testing.T) 
 			},
 		},
 		{
+			// PATCH, not PUT: PUT joined the allow-list in Fase 4c
+			// (billing.edit_guide genuinely requires it — see Validate's
+			// doc comment), so it is no longer a usable "unsupported
+			// method" fixture here.
 			name: "unsupported method",
 			d: EndpointDescriptor{
 				ID:       "fake.bad_method",
 				Host:     HostAPI,
-				Method:   http.MethodPut,
+				Method:   http.MethodPatch,
 				Path:     "/fake",
 				Verified: true,
 			},
