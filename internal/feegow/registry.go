@@ -794,7 +794,16 @@ var Registry = map[EndpointID]EndpointDescriptor{
 			"estão confirmados pelo corpo real (NÃO usa o envelope {success,content} padrão, apesar " +
 			"de ter um campo \"success\" — mesma situação de patient.check_eligibility acima); uma " +
 			"resposta de sucesso real não foi observada, então o shape exato do conteúdo em caso de " +
-			"sucesso continua desconhecido — EnvelopeNone não depende disso, só repassa o corpo cru.",
+			"sucesso continua desconhecido — EnvelopeNone não depende disso, só repassa o corpo cru.\n" +
+			"Fase 4c: POST com corpo vazio → 422 {\"success\":false,\"message\":{\"agendamento_id\":" +
+			"[\"...obrigatório.\"],\"laudo_base64\":[\"...obrigatório.\"]}} — confirma os dois campos " +
+			"exigidos e é o primeiro exemplo real do TERCEIRO formato de 422 que classify422 " +
+			"(client.go) passou a tratar: o mapa campo->mensagens vem ANINHADO dentro de \"message\" " +
+			"(que nos outros formatos é string), não solto no nível raiz. tools.RegistrarLaudo NÃO " +
+			"foi exercitada até uma criação real (instrução explícita desta fase: o prontuário de uma " +
+			"licença de teste não tem endpoint de limpeza) — só agendamento_id e laudo_base64 são " +
+			"expostos como obrigatórios; campos adicionais opcionais, se existirem, não foram " +
+			"sondados.",
 	},
 
 	// financial.find_invoice_by_nfse ("Obter invoices por nota fiscal") —
@@ -1454,5 +1463,309 @@ var Registry = map[EndpointID]EndpointDescriptor{
 			"count} sem campo \"success\" — não confirmado, apenas o que a doc descreve. Mesmo " +
 			"caminho \"financial2/external\" que /stock.location_list, sob um TLD diferente " +
 			"(core.feegow.com vs core.feegow.com.br) — doc bug conhecido, ver ESPECIFICACAO.md §8.",
+	},
+
+	// --- Propostas, Fase 4c (api.feegow.com/v1/api) ---------------------
+	//
+	// Every entry below was confirmed against the real sandbox by the Fase
+	// 4c smoke test (see internal/tools' gerenciar_propostas doc comment).
+
+	"proposal.list": {
+		ID:     "proposal.list",
+		Host:   HostAPI,
+		Method: http.MethodGet,
+		Path:   "/proposal/list",
+		DateParams: []DateParam{
+			{Role: DateRoleStart, WireName: "data_inicio", Format: ISO8601},
+			{Role: DateRoleEnd, WireName: "data_fim", Format: ISO8601},
+		},
+		Envelope: EnvelopeStandard,
+		Verified: true,
+		Notes: "Confirmado ponta a ponta pela Fase 4c: sem parâmetros → 422 nomeando data_inicio e " +
+			"data_fim como obrigatórios QUANDO paciente_id não é fornecido; com paciente_id=1 (sem " +
+			"propostas cadastradas) → 422 {\"paciente_id\":[\"Não existem propostas para este " +
+			"paciente.\"]} (formato Laravel bare-map comum, tratado como ValidationError normal); com " +
+			"data_inicio=2026-01-01&data_fim=2026-02-01 → 200 REAL {\"success\":true,\"content\":[]," +
+			"\"total\":0} (ISO-8601, confirmando o formato — não DD-MM-YYYY). limit/offset foram " +
+			"aceitos sem erro quando enviados, e uma janela de ~6 anos (2020-01-01 a 2026-01-01) " +
+			"também foi aceita sem erro — a sandbox vazia não permitiu provar se algum dos dois " +
+			"filtra de verdade, então NENHUM PaginationSpec é declarado aqui (mesmo raciocínio de " +
+			"financial.list_suppliers na Fase 4b): gerenciar_propostas impõe seu próprio teto de " +
+			"janela de datas (requireDateRange, reaproveitado de financeiro_consulta.go) em vez de " +
+			"expor uma paginação não confirmada.",
+	},
+
+	// proposal.list_dates ("Listar propostas pela data") — contrato NÃO
+	// confirmável pela Fase 4c: mesma situação de financial.voucher_create/
+	// financial.account_association na Fase 4b.
+	"proposal.list_dates": {
+		ID:       "proposal.list_dates",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/proposal/list-dates",
+		Envelope: EnvelopeStandard,
+		Verified: false,
+		Notes: "Contrato NÃO confirmável pela Fase 4c: TODA combinação testada — sem parâmetros, só " +
+			"data_inicio, só data_fim, ambas as datas, e nomes alternativos (data, dataInicio, " +
+			"dataFim, periodo_inicio/periodo_fim, start/end, data_start/data_end, data_referencia) " +
+			"— devolveu o MESMO 400 {\"success\":false,\"message\":\"Só pode buscar utilizando " +
+			"apenas uma das datas.\"}, inclusive quando exatamente UMA data era enviada (o que a " +
+			"própria mensagem diz que deveria bastar). Mesma situação de " +
+			"financial.voucher_create/financial.account_association na Fase 4b: nenhuma sondagem " +
+			"conseguiu isolar o nome real do(s) parâmetro(s) de data. tools.GerenciarPropostas " +
+			"(acao=listar_por_data) NÃO chama este endpoint por causa disso — devolve " +
+			"ArgumentIndisponivel em vez de uma chamada que certamente falharia de forma opaca.",
+	},
+
+	// proposal.create ("Criar proposta") — mesmo limite de risco que
+	// financial.invoice_create na Fase 4b: os campos de TOPO são
+	// confirmados, mas a forma interna de "procedimentos" não foi sondada
+	// para não arriscar criar uma proposta real sem endpoint de remoção
+	// documentado.
+	"proposal.create": {
+		ID:       "proposal.create",
+		Host:     HostAPI,
+		Method:   http.MethodPost,
+		Path:     "/proposal/create",
+		Envelope: EnvelopeStandard,
+		Verified: false,
+		Notes: "POST corpo vazio → 422 nomeando 5 campos obrigatórios: proposer_id, paciente_id, " +
+			"status_id, proposal_date, procedimentos. Com os quatro primeiros = 1 (placeholders) e " +
+			"procedimentos=[] → 422 NOVO: proposer_id e paciente_id \"O campo ... selecionado é " +
+			"inválido\" (regra tipo \"exists\", contra ids reais desta licença) e procedimentos " +
+			"ainda \"obrigatório\" (array vazio não satisfaz — precisa ter pelo menos um item). A " +
+			"forma INTERNA de cada item de procedimentos NÃO foi confirmada — completar uma criação " +
+			"real exigiria paciente/proposer/procedimento reais desta licença, e não há endpoint de " +
+			"remoção de proposta documentado (mesmo risco de financial.invoice_create na Fase 4b). " +
+			"Envelope de sucesso ASSUMIDO {success,content} por analogia com proposal.list/" +
+			"proposal.proposal_url (mesmo grupo, ambos confirmados com esse envelope) — não " +
+			"observado diretamente para este endpoint.",
+	},
+
+	// proposal.change_status ("Mudar status da proposta") — nomes de campo
+	// em INGLÊS (proposal_id), diferente de proposal.proposal_url, que usa
+	// PORTUGUÊS (proposta_id) para o mesmo conceito.
+	"proposal.change_status": {
+		ID:       "proposal.change_status",
+		Host:     HostAPI,
+		Method:   http.MethodPost,
+		Path:     "/proposal/change-status",
+		Envelope: EnvelopeStandard,
+		Verified: false,
+		Notes: "POST corpo vazio → 422 nomeando proposal_id e status_id como obrigatórios (nomes em " +
+			"INGLÊS \"proposal_id\", DIFERENTE de proposal.proposal_url, que usa \"proposta_id\" em " +
+			"PORTUGUÊS para o mesmo conceito — mais uma divergência de nomenclatura confirmada nesta " +
+			"API). Com proposal_id=1, status_id=1 → 422 só sobre proposal_id (\"selecionado é " +
+			"inválido\") — confirma que status_id=1 É um valor de status válido, e que proposal_id " +
+			"passa por uma checagem \"exists\" contra propostas reais desta licença. Nenhuma " +
+			"proposta real foi mutada (evitar mudar o status de algo de verdade sem saber o efeito). " +
+			"Envelope de sucesso assumido por analogia, mesma razão de proposal.create.",
+	},
+
+	"proposal.proposal_url": {
+		ID:       "proposal.proposal_url",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/proposal/proposal-url",
+		Envelope: EnvelopeStandard,
+		Verified: true,
+		Notes: "Confirmado ponta a ponta pela Fase 4c: sem parâmetros → 422 {\"proposta_id\":[\"O " +
+			"campo proposta id é obrigatório.\"]} (nome em PORTUGUÊS \"proposta_id\" — ver a nota de " +
+			"proposal.change_status sobre essa divergência com o resto do grupo); com proposta_id=1 " +
+			"(proposta inexistente nesta sandbox) → 200 REAL {\"success\":true,\"content\":false} — " +
+			"content é um BOOLEAN quando não há URL disponível para o id, não uma string nem null.",
+	},
+
+	// --- Laudos, Fase 4c (api.feegow.com/v1/api) -------------------------
+
+	// medical_reports.get_laudos_list ("Listar laudos") — contrato NÃO
+	// confirmável pela Fase 4c, mesma classe de problema que
+	// proposal.list_dates acima.
+	"medical_reports.get_laudos_list": {
+		ID:       "medical_reports.get_laudos_list",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/medical-reports/get-laudos-list",
+		Envelope: EnvelopeStandard,
+		Verified: false,
+		Notes: "Contrato NÃO confirmável pela Fase 4c: toda combinação testada (sem parâmetros, " +
+			"data_inicio/data_fim, date_start/date_end, data, data_referencia, periodo_inicio/" +
+			"periodo_fim, start/end, dataInicio/dataFim, agendamento_id) devolveu o MESMO 422 " +
+			"{\"success\":false,\"cod_erro\":0,\"message\":\"Data missing\"} — o nome real do(s) " +
+			"parâmetro(s) de data não pôde ser isolado. POST no mesmo path → 422 real \"The POST " +
+			"method is not supported for this route. Supported methods: GET, HEAD.\", confirmando " +
+			"que GET é o método certo (não é um erro de método mascarando o problema). Mesma " +
+			"situação de proposal.list_dates acima: tools.ConsultarLaudos (acao=listar) devolve " +
+			"ArgumentIndisponivel em vez de adivinhar.",
+	},
+
+	"medical_reports.get_labs_report_file": {
+		ID:       "medical_reports.get_labs_report_file",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/medical-reports/get-labs-report-file",
+		Envelope: EnvelopeStandard,
+		Verified: true,
+		Notes: "Confirmado ponta a ponta pela Fase 4c: sem parâmetros → 422 " +
+			"{\"success\":true,\"content\":{\"lab_report_id\":[\"O campo lab report id é " +
+			"obrigatório.\"]}} — o QUARTO formato de 422 que classify422 (client.go) trata: o mapa " +
+			"campo->mensagens vem aninhado dentro de \"content\" (não \"message\"), com \"success\" " +
+			"deixado em true apesar de ser um 422 real (irrelevante para a classificação, que " +
+			"despacha por status HTTP, não pelo corpo — ver EnvelopeKind). Com lab_report_id=1 " +
+			"(laudo inexistente) → 200 REAL {\"success\":true,\"content\":{\"status\":3,\"msg\":" +
+			"\"Arquivo não existe\"},\"total\":2} — envelope padrão {success,content,total} " +
+			"confirmado.",
+	},
+
+	// medical_reports.search ("Visualizar laudo registrado no Feegow a
+	// partir do agendamento") — laudo é dado clínico; consultar_laudos
+	// (acao=visualizar) devolve o mínimo útil e nunca despeja o conteúdo do
+	// laudo em log (ver internal/tools/laudos_consulta.go).
+	"medical_reports.search": {
+		ID:       "medical_reports.search",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/medical-reports/search",
+		Envelope: EnvelopeNone,
+		Verified: false,
+		Notes: "Sem parâmetros → 422 {\"success\":false,\"message\":{\"agendamento_id\":[\"O campo " +
+			"agendamento id é obrigatório.\"]}} — o TERCEIRO formato de 422 (ver classify422 em " +
+			"client.go): mapa aninhado dentro de \"message\". Com agendamento_id=1 (sem laudo " +
+			"associado) → 409 REAL {\"success\":false,\"Message\":\"Não foi encontrado resultado " +
+			"para este laudo\"} — reparar no \"Message\" com M MAIÚSCULO, diferente de todo outro " +
+			"409 desta API (que usa \"content\", minúsculo, para o texto do erro); classifyError já " +
+			"cobre isso sem precisar de um case novo (seu fallback usa o corpo inteiro como Content " +
+			"quando \"content\" está ausente/vazio). Nenhuma resposta de SUCESSO (laudo realmente " +
+			"encontrado) foi observada — não há laudo cadastrado nesta sandbox e a Fase 4c não " +
+			"registrou um real (ver medical_reports.create). EnvelopeNone porque nem o 422 nem o " +
+			"409 usam o campo \"content\" padrão — mesma lógica de " +
+			"medical_reports.create/patient.check_eligibility: assumir EnvelopeStandard arriscaria " +
+			"procurar por \"content\" e descartar uma resposta real em silêncio.",
+	},
+
+	// --- Faturamento, Fase 4c (api.feegow.com/v1/api) --------------------
+	//
+	// As três abaixo compartilham o MESMO path — /billing/insurances-billing
+	// — sob três métodos HTTP diferentes (GET/PUT/POST), o único caso assim
+	// no inventário desta API. Por instrução EXPLÍCITA desta fase, nenhuma
+	// operação real foi completada (o faturamento de uma licença de teste
+	// não tem endpoint de limpeza) — só o 422 de corpo vazio foi sondado
+	// para cada verbo.
+
+	"billing.search_guide": {
+		ID:       "billing.search_guide",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/billing/insurances-billing",
+		Envelope: EnvelopeStandard,
+		Verified: false,
+		Notes: "GET sem parâmetros → 422 {\"billing_type_id\":[\"O campo billing type id é " +
+			"obrigatório.\"],\"billing\":[\"O campo billing é obrigatório.\"]}. \"billing\" não tem " +
+			"sufixo \"_id\" como todo outro identificador desta API (billing_type_id aqui mesmo, " +
+			"billing_id no PUT abaixo) — pode ser o mesmo conceito de billing_id sob outro nome " +
+			"(mais uma divergência de nomenclatura já documentada nesta API) ou um valor de outro " +
+			"tipo (ex.: número da guia); NÃO confirmado, por isso exposto como valor livre (any) na " +
+			"tool, nunca como *int. Envelope assumido {success,content} por analogia com o resto da " +
+			"API — não observado (instrução explícita desta fase: parar no 422 de corpo vazio).",
+	},
+
+	"billing.edit_guide": {
+		ID:       "billing.edit_guide",
+		Host:     HostAPI,
+		Method:   http.MethodPut,
+		Path:     "/billing/insurances-billing",
+		Envelope: EnvelopeStandard,
+		Verified: false,
+		Notes: "PUT sem parâmetros → 422 {\"billing_id\":[\"O campo billing id é obrigatório.\"]," +
+			"\"billing_type_id\":[\"O campo billing type id é obrigatório.\"]} — SÓ dois campos " +
+			"nomeados por essa validação de primeira camada (diferente do POST abaixo, que nomeia " +
+			"16); pode haver mais campos opcionais/condicionais não revelados sem enviar os dois " +
+			"primeiros. Confirma que PUT é aceito nesta rota (ver EndpointDescriptor.Validate em " +
+			"types.go para o porquê de PUT precisar entrar no allow-list de Method). Envelope " +
+			"assumido por analogia, não observado (instrução explícita desta fase: parar no 422 de " +
+			"corpo vazio, sem editar uma guia real).",
+	},
+
+	// billing.insert_guide ("Inserir Guia") — o corpo com MAIS campos
+	// obrigatórios de todo este registry (16). Por instrução EXPLÍCITA
+	// desta fase, NENHUMA inserção real foi tentada.
+	"billing.insert_guide": {
+		ID:       "billing.insert_guide",
+		Host:     HostAPI,
+		Method:   http.MethodPost,
+		Path:     "/billing/insurances-billing",
+		Envelope: EnvelopeStandard,
+		Verified: false,
+		Notes: "POST corpo vazio → 422 nomeando 16 campos obrigatórios: billing_type_id, unit_id, " +
+			"insurance_id, insurance_plan_id, applicant_professional_council_id, " +
+			"number_on_the_requesting_council, UF_Requesting_Council, requesting_CBO_code, hired, " +
+			"carrier_code, hired_requester_ID, hired_requester_code_at_carrier, ANS_registry, " +
+			"CNES_code, requesting_professional_ID, request_date. Só a OBRIGATORIEDADE e o NOME de " +
+			"cada campo foram confirmados — nenhum tipo exato (int vs string), formato " +
+			"(request_date livre? ISO-8601?) ou campo opcional adicional foi sondado além desta " +
+			"única validação de primeira camada, deliberadamente (mesmo limite que " +
+			"financial.invoice_create já aceitou na Fase 4b, e por instrução explícita desta fase: " +
+			"o faturamento de uma licença de teste não tem endpoint de limpeza). " +
+			"tools.GerenciarFaturamento (acao=inserir_guia) expõe os 16 campos individualmente mas " +
+			"tipados como valor livre (any) — nunca assume int/string sem confirmação, e nunca " +
+			"trava um caller real com um tipo Go incorreto que esta fase não teve como verificar. " +
+			"Envelope de sucesso assumido por analogia — não observado.",
+	},
+
+	// --- Relatórios, Fase 4c (api.feegow.com/v1/api) ---------------------
+
+	"reports.list": {
+		ID:       "reports.list",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/reports/list",
+		Envelope: EnvelopeNone,
+		Verified: true,
+		Notes: "Confirmado ponta a ponta pela Fase 4c: GET sem parâmetros → 200, ARRAY JSON PURO, " +
+			"sem NENHUM envelope — nem {success,content} nem {data,count,...} — por isso " +
+			"EnvelopeNone: EnvelopeStandard faria parseSuccess procurar por um campo \"success\" " +
+			"que não existe no nível raiz (a resposta É a lista). Cada item: {\"id\":N,\"Ct\":\"...\"" +
+			" (categoria/módulo),\"Relatorio\":\"...\" (nome de exibição),\"Arquivo\":\"...\" (slug " +
+			"usado como \"report\" em reports.generate),\"sysActive\":1,\"Permissoes\":\"...\"," +
+			"\"StatusRelatorioID\":1,\"NomeStatus\":\"Disponível\",\"CorStatus\":null," +
+			"\"Habilitado\":1}.",
+	},
+
+	"reports.generate": {
+		ID:       "reports.generate",
+		Host:     HostAPI,
+		Method:   http.MethodPost,
+		Path:     "/reports/generate",
+		Envelope: EnvelopeNone,
+		Verified: true,
+		Notes: "Confirmado ponta a ponta pela Fase 4c: POST corpo vazio → 422 {\"report\":[\"O " +
+			"campo report é obrigatório.\"]}; POST {\"report\":\"schedule-appointments\"} (o " +
+			"\"Arquivo\" de um relatório real listado por reports.list) → 200 REAL " +
+			"{\"success\":true,\"reportId\":53,\"route\":\"schedule-appointments\",\"reportName\":" +
+			"\"Agendamentos\",\"columns\":false,\"filters\":false,\"data\":false} — SEM campo " +
+			"\"content\" (por isso EnvelopeNone). columns/filters/data vieram todos `false` (não um " +
+			"array/objeto) sem nenhum filtro adicional enviado — provavelmente exigem parâmetros " +
+			"extras não documentados pelo inventário desta fase para popular dados de verdade; não " +
+			"sondado além do campo \"report\" obrigatório. ACHADO IMPORTANTE: com um \"report\" que " +
+			"NÃO corresponde a nenhum relatório real (ex.: \"nao-existe\") → 200 REAL, corpo `[]` — um " +
+			"ARRAY JSON vazio, um shape TOTALMENTE DIFERENTE do objeto {success,reportId,...} do caso " +
+			"válido, sem nenhum campo \"success\" para checar. tools.GerarRelatorio decodifica a " +
+			"resposta como `any` genérico (nunca assume um dos dois shapes) exatamente por causa " +
+			"disso — checkEnvelopeNoneSuccess não se aplica aqui: forçar um struct com campo Success " +
+			"quebraria a decodificação do caso `[]`, transformando um \"report\" inválido (resultado " +
+			"vazio, não um erro) num erro de decodificação.",
+	},
+
+	// --- Funcionários, Fase 4c (api.feegow.com/v1/api) --------------------
+	"employee.list": {
+		ID:       "employee.list",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/employee/list",
+		Envelope: EnvelopeStandard,
+		Verified: true,
+		Notes: "Confirmado ponta a ponta pela Fase 4c: GET sem parâmetros → 200 {\"success\":true," +
+			"\"content\":[],\"total\":0}, sandbox sem funcionários cadastrados. Sem parâmetros " +
+			"testados além disso.",
 	},
 }

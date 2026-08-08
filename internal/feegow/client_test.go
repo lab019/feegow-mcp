@@ -278,6 +278,150 @@ func TestCall_422MessageStyleValidation(t *testing.T) {
 	}
 }
 
+// TestCall_422NestedMessageValidation proves the THIRD 422 shape the Fase 4c
+// smoke test measured against /medical-reports/search and
+// /medical-reports/create: {"success":false,"message":{"campo":["..."]}} —
+// the SAME per-field validation map as the bare-Laravel shape, just nested
+// one level inside "message" instead of sitting at the top. Before this
+// fix, ValidationError.Message being a *string made this unmarshal fail
+// silently and fall all the way through to the field-name-less
+// UnexpectedStatusError, throwing away exactly the field names an agent
+// needs to fix the call — never a PII leak (the raw body still never
+// reaches the caller), just a worse error message.
+func TestCall_422NestedMessageValidation(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/appoints/new-appoint", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusUnprocessableEntity,
+			`{"success":false,"message":{"agendamento_id":["O campo agendamento id é obrigatório."]}}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.Client(), srv.URL)
+	_, err := c.Call(ctxWithToken("tok"), "appoints.new_appoint", Request{})
+	if err == nil {
+		t.Fatal("Call: got nil error, want a ValidationError")
+	}
+
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("error is not a *ValidationError: %v (%T)", err, err)
+	}
+	if got := validationErr.Fields["agendamento_id"]; len(got) != 1 || got[0] != "O campo agendamento id é obrigatório." {
+		t.Fatalf("ValidationError.Fields[agendamento_id] = %v, want the nested message preserved", got)
+	}
+	if validationErr.Message != "" {
+		t.Fatalf("ValidationError.Message = %q, want empty (this shape populates Fields, not Message)", validationErr.Message)
+	}
+
+	var notFound *RouteNotFoundError
+	if errors.As(err, &notFound) {
+		t.Fatalf("nested-message 422 also matched *RouteNotFoundError — the two must be distinguishable")
+	}
+}
+
+// TestCall_422NestedContentValidation is the FOURTH 422 shape the Fase 4c
+// smoke test measured against /medical-reports/get-labs-report-file: the
+// same nested field->messages map, but under "content" instead of
+// "message", with "success" left at true despite this being a real 422.
+// classify422 only runs at all because Client.Call dispatches on HTTP
+// status (422), independent of any "success" field in the body — see
+// EnvelopeKind's doc comment — so the misleading success:true here must
+// not prevent classification.
+func TestCall_422NestedContentValidation(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/appoints/new-appoint", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusUnprocessableEntity,
+			`{"success":true,"content":{"lab_report_id":["O campo lab report id é obrigatório."]}}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.Client(), srv.URL)
+	_, err := c.Call(ctxWithToken("tok"), "appoints.new_appoint", Request{})
+	if err == nil {
+		t.Fatal("Call: got nil error, want a ValidationError")
+	}
+
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("error is not a *ValidationError: %v (%T)", err, err)
+	}
+	if got := validationErr.Fields["lab_report_id"]; len(got) != 1 || got[0] != "O campo lab report id é obrigatório." {
+		t.Fatalf("ValidationError.Fields[lab_report_id] = %v, want the nested message preserved", got)
+	}
+}
+
+// TestCall_422RouteNotFound_StillDistinguishableFromNestedShapes re-proves
+// the RouteNotFoundError fingerprint (empty-string "message") is never
+// confused with the new nested-map shapes: an empty JSON string fails to
+// unmarshal into map[string][]string, so the nested-shape loop in
+// classify422 must fall through to the flat *string check exactly as it
+// did before this fix, not misclassify the fingerprint as an empty
+// ValidationError.
+func TestCall_422RouteNotFound_StillDistinguishableFromNestedShapes(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/appoints/new-appoint", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusUnprocessableEntity, `{"success":false,"cod_erro":0,"message":""}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.Client(), srv.URL)
+	_, err := c.Call(ctxWithToken("tok"), "appoints.new_appoint", Request{})
+
+	var notFound *RouteNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("error is not a *RouteNotFoundError: %v (%T)", err, err)
+	}
+	var validationErr *ValidationError
+	if errors.As(err, &validationErr) {
+		t.Fatalf("empty-message 422 matched *ValidationError after the nested-shape fix — must still be a RouteNotFoundError")
+	}
+}
+
+// TestClassify422_NestedMapWinsOverRouteNotFoundFingerprint pins the one
+// case where the two 422 markers collide: a body that carries BOTH the
+// empty-"message" route-not-found fingerprint AND a real field->messages
+// map under "content". The adversarial review flagged that classify422's
+// comment claimed the nested-shape loop was "a no-op for every other 422
+// shape, including the empty-string fingerprint" — true for a body with
+// only the fingerprint, false for this combined one, where the loop finds
+// the map under "content" and returns ValidationError.
+//
+// The behavior is the one we want (field names a caller can act on beat
+// "this route doesn't exist" for a route that plainly just validated
+// input — see classify422's doc), so this test exists to make that
+// precedence explicit and load-bearing: reordering classify422 to check
+// the fingerprint first would silently swap the outcome, and this is what
+// would catch it. No observed Feegow body combines the two markers today;
+// that is exactly why the rule needs a test rather than a sample.
+func TestClassify422_NestedMapWinsOverRouteNotFoundFingerprint(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/appoints/new-appoint", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusUnprocessableEntity,
+			`{"success":true,"message":"","content":{"lab_report_id":["O campo lab report id é obrigatório."]}}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.Client(), srv.URL)
+	_, err := c.Call(ctxWithToken("tok"), "appoints.new_appoint", Request{})
+
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("error is not a *ValidationError: %v (%T)", err, err)
+	}
+	if got := validationErr.Fields["lab_report_id"]; len(got) != 1 {
+		t.Fatalf("ValidationError.Fields[lab_report_id] = %v, want the nested message preserved", got)
+	}
+	var notFound *RouteNotFoundError
+	if errors.As(err, &notFound) {
+		t.Fatal("combined body classified as *RouteNotFoundError — the nested field map must win, " +
+			"since a nonexistent route has no field names to reject")
+	}
+}
+
 // TestCall_403_CredentialInactive_NotPermissionMessage is acceptance
 // criterion 6: 403 must read as "credencial inativa, recadastre", never
 // as a permission problem — the exact inversion ESPECIFICACAO.md §5 warns

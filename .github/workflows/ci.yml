@@ -41,3 +41,21 @@ jobs:
 
       - name: go test
         run: go test ./... -count=1
+
+      # O teste de contrato (build tag `contract`) fica fora do `go test ./...`
+      # de propósito — ele bate na API real. Mas ficar fora do CI significa
+      # que ele apodrece calado: uma mudança no Registry ou no Client quebra a
+      # compilação dele e ninguém descobre até a próxima vez que alguém rodar
+      # a suíte à mão, com um token na mão. `go vet -tags=contract` compila e
+      # analisa o arquivo sem executar nada.
+      - name: go vet (teste de contrato)
+        run: go vet -tags=contract ./...
+
+      # TestContract_WriteProbeClassified é o guarda que impede um endpoint de
+      # ESCRITA novo de cair na sondagem por padrão: ele exige que todo
+      # POST/PUT do Registry esteja explicitamente em writeProbeAllowIDs ou em
+      # writeProbeDenyIDs. Só lê o Registry — sem token, sem rede — então roda
+      # aqui, onde a classificação faltando vira PR vermelho em vez de uma
+      # sondagem silenciosa contra uma licença real meses depois.
+      - name: go test (classificação de escrita do teste de contrato)
+        run: go test -tags=contract ./internal/feegow/... -run TestContract_WriteProbeClassified -count=1
