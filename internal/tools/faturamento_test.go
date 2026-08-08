@@ -128,6 +128,79 @@ func TestGerenciarFaturamento_Editar_Success(t *testing.T) {
 	}
 }
 
+// TestGerenciarFaturamento_Editar_AuditsBillingID closes the traceability
+// hole the adversarial review found: this write used to call
+// auditAdminWrite(tool, 0, 0), recording that a guia de faturamento was
+// edited while throwing away WHICH one — unlike every sibling write, which
+// records its record id (see auditAdminWriteRecord's doc). billing_id is
+// `any` here (Feegow's type for it was never confirmed), which is the only
+// reason it did not fit the int-typed helper; auditAdminWriteRecordOpaque
+// exists for exactly this case.
+func TestGerenciarFaturamento_Editar_AuditsBillingID(t *testing.T) {
+	buf := captureLog(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/billing/insurances-billing", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, `{"success":true,"content":"Guia atualizada"}`)
+	})
+	client := newTestClient(t, mux)
+
+	if _, err := GerenciarFaturamento(ctxWithToken("tok"), client, GerenciarFaturamentoArgs{
+		Acao: "editar", Confirmacao: true, BillingID: float64(9), BillingTypeID: intPtr(2),
+	}); err != nil {
+		t.Fatalf("GerenciarFaturamento: %v", err)
+	}
+
+	logged := buf.String()
+	if !strings.Contains(logged, "ADMIN WRITE gerenciar_faturamento:editar") {
+		t.Fatalf("editar never audited its write: %s", logged)
+	}
+	if !strings.Contains(logged, `billing_id="9"`) {
+		t.Fatalf("audit line does not record WHICH guia was edited: %s", logged)
+	}
+}
+
+// TestGerenciarFaturamento_Editar_AuditBoundsOpaqueID proves the audit line
+// can't be turned into a log-injection or an unbounded write by the caller:
+// billing_id is `any` straight off a JSON payload, so a hostile/confused
+// caller can put a megabyte with embedded newlines there. The rendered form
+// must stay on one line and stay short.
+func TestGerenciarFaturamento_Editar_AuditBoundsOpaqueID(t *testing.T) {
+	buf := captureLog(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/billing/insurances-billing", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, `{"success":true,"content":"Guia atualizada"}`)
+	})
+	client := newTestClient(t, mux)
+
+	hostile := strings.Repeat("A", 500) + "\nfeegow: ADMIN WRITE forjado — billing_id=\"1\""
+	if _, err := GerenciarFaturamento(ctxWithToken("tok"), client, GerenciarFaturamentoArgs{
+		Acao: "editar", Confirmacao: true, BillingID: hostile, BillingTypeID: intPtr(2),
+	}); err != nil {
+		t.Fatalf("GerenciarFaturamento: %v", err)
+	}
+
+	logged := buf.String()
+	if strings.Contains(logged, "ADMIN WRITE forjado") {
+		t.Fatalf("caller-controlled billing_id forged a second audit line: %s", logged)
+	}
+	// Exactly one ADMIN WRITE line, and the hostile payload must not have
+	// split it in two. (The buffer also holds internal/feegow's own
+	// per-request line, so this counts the audit lines specifically rather
+	// than every line in the buffer.)
+	var auditLines []string
+	for _, line := range strings.Split(strings.TrimRight(logged, "\n"), "\n") {
+		if strings.Contains(line, "ADMIN WRITE") {
+			auditLines = append(auditLines, line)
+		}
+	}
+	if len(auditLines) != 1 {
+		t.Fatalf("want exactly 1 ADMIN WRITE line, got %d: %q", len(auditLines), logged)
+	}
+	if len(auditLines[0]) > 200 {
+		t.Fatalf("audit line is unbounded (%d bytes) — the rune cap did not apply: %q", len(auditLines[0]), auditLines[0])
+	}
+}
+
 func TestGerenciarFaturamento_InserirGuia_RequiresConfirmacao_BeforeAnyFeegowCall(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

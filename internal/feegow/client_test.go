@@ -380,6 +380,48 @@ func TestCall_422RouteNotFound_StillDistinguishableFromNestedShapes(t *testing.T
 	}
 }
 
+// TestClassify422_NestedMapWinsOverRouteNotFoundFingerprint pins the one
+// case where the two 422 markers collide: a body that carries BOTH the
+// empty-"message" route-not-found fingerprint AND a real field->messages
+// map under "content". The adversarial review flagged that classify422's
+// comment claimed the nested-shape loop was "a no-op for every other 422
+// shape, including the empty-string fingerprint" — true for a body with
+// only the fingerprint, false for this combined one, where the loop finds
+// the map under "content" and returns ValidationError.
+//
+// The behavior is the one we want (field names a caller can act on beat
+// "this route doesn't exist" for a route that plainly just validated
+// input — see classify422's doc), so this test exists to make that
+// precedence explicit and load-bearing: reordering classify422 to check
+// the fingerprint first would silently swap the outcome, and this is what
+// would catch it. No observed Feegow body combines the two markers today;
+// that is exactly why the rule needs a test rather than a sample.
+func TestClassify422_NestedMapWinsOverRouteNotFoundFingerprint(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/appoints/new-appoint", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusUnprocessableEntity,
+			`{"success":true,"message":"","content":{"lab_report_id":["O campo lab report id é obrigatório."]}}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.Client(), srv.URL)
+	_, err := c.Call(ctxWithToken("tok"), "appoints.new_appoint", Request{})
+
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("error is not a *ValidationError: %v (%T)", err, err)
+	}
+	if got := validationErr.Fields["lab_report_id"]; len(got) != 1 {
+		t.Fatalf("ValidationError.Fields[lab_report_id] = %v, want the nested message preserved", got)
+	}
+	var notFound *RouteNotFoundError
+	if errors.As(err, &notFound) {
+		t.Fatal("combined body classified as *RouteNotFoundError — the nested field map must win, " +
+			"since a nonexistent route has no field names to reject")
+	}
+}
+
 // TestCall_403_CredentialInactive_NotPermissionMessage is acceptance
 // criterion 6: 403 must read as "credencial inativa, recadastre", never
 // as a permission problem — the exact inversion ESPECIFICACAO.md §5 warns

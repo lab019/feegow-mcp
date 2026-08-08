@@ -327,10 +327,22 @@ func classify422(body []byte) error {
 	// mistaken for one holding a plain string message (shape 2) or the
 	// RouteNotFoundError fingerprint (shape 2 with an empty string) — an
 	// object simply fails to unmarshal into map[string][]string when it
-	// isn't shaped like one, so this loop is a no-op for every other 422
-	// shape in this function, including the empty-string fingerprint
-	// (a JSON string "" fails to unmarshal into a map, same as any other
-	// string does).
+	// isn't shaped like one.
+	//
+	// Precedence, stated exactly, because a body can carry BOTH markers:
+	// a nested field->messages map found under EITHER wrapper key wins
+	// over the empty-"message" route-not-found fingerprint. So
+	// {"success":true,"message":"","content":{"campo":["obrigatório"]}}
+	// classifies as ValidationError{Fields}, not RouteNotFoundError. That
+	// is deliberate, not incidental: a route that does not exist has no
+	// field names to complain about, so a body carrying a real field map
+	// is evidence the route DID run and rejected the input — and a caller
+	// can act on field names, while "essa rota não existe" for a route
+	// that plainly just validated something would send them chasing a
+	// phantom. No observed Feegow body combines the two (every real sample
+	// carried exactly one wrapper); the rule is pinned by
+	// TestClassify422_NestedMapWinsOverRouteNotFoundFingerprint so it stays
+	// a decision rather than a side effect of statement order.
 	for _, wrapperKey := range [...]string{"message", "content"} {
 		var wrapper map[string]json.RawMessage
 		if err := json.Unmarshal(body, &wrapper); err != nil {

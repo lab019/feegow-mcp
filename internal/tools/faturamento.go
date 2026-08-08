@@ -164,7 +164,7 @@ func faturamentoEditar(ctx context.Context, client *feegow.Client, args Gerencia
 		return nil, err
 	}
 
-	auditAdminWrite("gerenciar_faturamento:editar", 0, 0)
+	auditAdminWriteRecordOpaque("gerenciar_faturamento:editar", "billing_id", args.BillingID)
 	return &GerenciarFaturamentoResult{Sucesso: true}, nil
 }
 

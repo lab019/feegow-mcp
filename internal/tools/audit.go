@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"fmt"
 	"log"
 
 	"github.com/lab019/feegow-mcp/internal/loglevel"
@@ -113,6 +114,38 @@ func auditAdminWriteRecord(tool, label string, recordID int) {
 		return
 	}
 	log.Printf("feegow: ADMIN WRITE %s — %s=%d", tool, label, recordID)
+}
+
+// auditRecordIDMaxRunes bounds the rendered form of an opaque record id in
+// auditAdminWriteRecordOpaque. The id comes from the caller (the LLM), so
+// without a bound a single audit line could carry an arbitrarily long
+// string into the service log.
+const auditRecordIDMaxRunes = 64
+
+// auditAdminWriteRecordOpaque is auditAdminWriteRecord for the one admin
+// write whose record id is NOT an int on our side: gerenciar_faturamento's
+// billing_id, typed `any` because Feegow's own type for it was never
+// confirmed by a real call (see GerenciarFaturamentoArgs). Before this,
+// that write logged auditAdminWrite(tool, 0, 0) — recording that a guia was
+// edited while discarding WHICH one, the exact traceability hole
+// auditAdminWriteRecord exists to close for its int-typed siblings.
+//
+// Rendered with %q over a rune-bounded %v: %v because the underlying type
+// is genuinely unknown (a JSON number decodes to float64, an id sent as a
+// string stays a string), %q because the value is caller-controlled and an
+// unescaped newline in a log line is how one audit record becomes two, and
+// bounded because an `any` from a JSON payload has no natural length limit.
+// Same PII discipline as auditAdminWriteRecord — billing_id identifies a
+// guia de faturamento, never a person.
+func auditAdminWriteRecordOpaque(tool, label string, recordID any) {
+	if !loglevel.Verbose() {
+		return
+	}
+	rendered := fmt.Sprintf("%v", recordID)
+	if r := []rune(rendered); len(r) > auditRecordIDMaxRunes {
+		rendered = string(r[:auditRecordIDMaxRunes]) + "…"
+	}
+	log.Printf("feegow: ADMIN WRITE %s — %s=%q", tool, label, rendered)
 }
 
 // auditAdminWriteQueue is auditAdminWrite's counterpart for

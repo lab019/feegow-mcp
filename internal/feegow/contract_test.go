@@ -19,14 +19,24 @@
 //
 //  1. Endpoints com Method POST/PUT/DELETE são PULADOS por padrão. Só GET é
 //     exercitado na corrida normal (TestContract_Liveness / TestContract_Shape).
+//     A regra não tem exceção — nem para um endpoint que "não ia chegar lá de
+//     todo jeito": os POST de estoque em knownDeadIDs são verificados por
+//     resolução de DNS, nunca por requisição (deadHostStillUnresolvable).
 //  2. Opt-in explícito via FEEGOW_CONTRACT_PROBE_WRITES=true habilita
-//     TestContract_WriteProbe, que sonda POST/PUT com CORPO VAZIO apenas —
-//     isso devolve um 4xx nomeando os campos obrigatórios, sem mutar nada.
-//     NUNCA envie aqui um payload plausível/preenchido.
+//     TestContract_WriteProbe, que sonda com CORPO VAZIO apenas os POST/PUT
+//     de writeProbeAllowIDs — cada um deles ou é uma leitura filtrável
+//     exposta via POST, ou teve uma chamada de corpo vazio REALMENTE
+//     observada. Tudo que cria/edita paciente, laudo, agendamento, nota
+//     fiscal, guia ou estoque está em writeProbeDenyIDs e não é sondado nem
+//     com o opt-in. NUNCA envie aqui um payload plausível/preenchido.
 //  3. DELETE nunca é sondado, com ou sem opt-in — não existe uma sondagem seg-
 //     ura para um método cujo único efeito possível é apagar um registro real.
 //  4. O token vem SÓ de env (FEEGOW_CONTRACT_TOKEN) — nunca de um arquivo
 //     deste repo — e nunca é logado (nem em erro, nem em -v).
+//  5. Um POST/PUT novo no Registry que não esteja em nenhuma das duas listas
+//     FALHA TestContract_WriteProbeClassified (que não precisa de token nem
+//     de rede) em vez de ser sondado por padrão. A classificação é uma
+//     decisão explícita, não um efeito colateral de esquecer da lista.
 //
 // Como rodar:
 //
@@ -94,6 +104,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"sort"
@@ -176,6 +187,7 @@ func callEndpoint(tok string, id feegow.EndpointID, req feegow.Request) (*feegow
 var (
 	connOnce   sync.Once
 	connOK     bool
+	connKind   outcomeKind
 	connDetail string
 )
 
@@ -190,10 +202,27 @@ func checkConnectivity(t *testing.T, tok string) {
 	t.Helper()
 	connOnce.Do(func() {
 		_, err := callEndpoint(tok, "company.list_unity", feegow.Request{})
-		kind, detail := classify(err)
-		connOK = kind != kindNetwork
-		connDetail = detail
+		connKind, connDetail = classify(err)
+		connOK = connKind != kindNetwork
 	})
+	// A rejected credential is neither a network failure nor a contract
+	// signal — it invalidates every OTHER result in this file, and silently.
+	// Feegow answers 401/403 from auth middleware, before routing, so with a
+	// wrong or expired token a route that was DELETED answers exactly like a
+	// route that still exists: Camera 1 would classify all 80-odd endpoints
+	// as "vivos" and print a confident green summary having never completed
+	// a single successful call. Camera 2 would catch it — but only if it
+	// runs, and `-run TestContract_Liveness` is a legitimate way to run this
+	// suite. Fail hard here instead, once, where the cause is unambiguous.
+	if connKind == kindCredential {
+		t.Fatalf(
+			"credencial rejeitada pela Feegow no canário company.list_unity (%s) — %s está setado mas "+
+				"inválido/expirado para esta licença. Isto NÃO é um sinal de contrato e nenhum outro "+
+				"resultado deste pacote significa coisa alguma enquanto não for corrigido: com o token "+
+				"errado a API responde 401/403 antes do roteamento, então uma rota REMOVIDA fica "+
+				"indistinguível de uma rota viva.",
+			connDetail, tokenEnv)
+	}
 	if !connOK {
 		t.Skipf(
 			"sem conectividade com a API da Feegow (canário company.list_unity falhou: %s) — "+
@@ -481,14 +510,21 @@ func TestMain(m *testing.M) {
 // these, an error is the healthy, expected outcome and a SUCCESS is the
 // noteworthy one.
 //
-// The four HostCoreBR entries here are POST — normally excluded from any
-// unprobed call by the write-safety rule — but calling them is safe
-// regardless of method specifically BECAUSE core.feegow.com.br does not
-// resolve in this environment (confirmed by Fase 0): DNS resolution fails
-// before a single byte is sent, so there is no server on the other end to
-// mutate. If that host ever starts resolving, this call would then reach
-// a real POST endpoint — which is exactly the "ressuscitou" signal this
-// check exists to catch, surfaced as a report, not a silent write.
+// The four HostCoreBR entries here are POST — inserção/movimentação/baixa
+// de estoque. They are NEVER called over HTTP by this file, with or
+// without the write opt-in: their "deadness" is a DNS fact
+// (core.feegow.com.br does not resolve in this environment, confirmed by
+// Fase 0), so it is verified as a DNS fact, by resolving the host and
+// asserting it still fails — see deadHostStillUnresolvable. An earlier
+// version of this check issued the HTTP call anyway and justified it with
+// "DNS fails before a single byte is sent". That reasoning made the safety
+// of a POST against real estoque depend on a property owned by Feegow's
+// nameservers, not by this repository: the day that host starts resolving,
+// the very run meant to REPORT "ressuscitou" would first have fired four
+// empty-body POSTs at a real licença's stock endpoints — none of which has
+// a single confirmed call behind it (see their Registry Notes). The
+// resurrection signal is worth having; paying for it with an unprobed
+// write is not, and a DNS lookup buys the same signal for free.
 var knownDeadIDs = map[feegow.EndpointID]bool{
 	"financial.dmed":               true, // GET, HostAPI — 404 in this env (route disabled).
 	"financial.private_table_list": true, // GET, HostCore — 404 in this env (route disabled).
@@ -783,6 +819,37 @@ func TestContract_Shape(t *testing.T) {
 // Known-dead endpoints: verify they stay dead.
 // ----------------------------------------------------------------------
 
+// deadHostStillUnresolvable verifies a known-dead NON-GET endpoint the only
+// way this file is willing to: by asking DNS whether its host resolves,
+// never by sending a request. Registry's Notes for every such entry give
+// exactly one reason for the endpoint being dead — "host does not resolve"
+// — so that is the claim under test, and a lookup tests it directly.
+//
+// A resolvable host is the "ressuscitou" signal, reported without ever
+// touching the endpoint: whoever sees it re-probes deliberately, by hand,
+// against a licença they chose, rather than having this suite do it for
+// them as a side effect.
+func deadHostStillUnresolvable(t *testing.T, id feegow.EndpointID, host feegow.Host) {
+	t.Helper()
+	// Host carries a path suffix for some entries (HostAPI is
+	// "api.feegow.com/v1/api"); DNS only wants the authority.
+	name := string(host)
+	if i := strings.IndexByte(name, '/'); i >= 0 {
+		name = name[:i]
+	}
+	addrs, err := net.LookupHost(name)
+	if err != nil {
+		t.Logf("%s continua morto, como esperado (host %q não resolve: %v)", id, name, err)
+		return
+	}
+	t.Errorf(
+		"RESSUSCITOU (DNS): %s — Registry documenta este endpoint como inacessível porque o host %q "+
+			"não resolve, mas agora ele resolve (%d endereço(s)). Este endpoint é %s (escrita) e por "+
+			"isso NÃO foi chamado: reavalie a Nota e o campo Verified sondando-o à mão, contra uma "+
+			"licença que você escolheu conscientemente.",
+		id, name, len(addrs), feegow.Registry[id].Method)
+}
+
 func TestContract_KnownDeadStayDead(t *testing.T) {
 	tok := requireToken(t)
 	checkConnectivity(t, tok)
@@ -792,9 +859,18 @@ func TestContract_KnownDeadStayDead(t *testing.T) {
 			continue
 		}
 		t.Run(string(id), func(t *testing.T) {
+			d := feegow.Registry[id]
+			// Rule 1 of this file's header applies here too, and it has no
+			// exception for "we're pretty sure the call won't land": a
+			// non-GET known-dead entry is verified through DNS, never
+			// through a request.
+			if d.Method != http.MethodGet {
+				deadHostStillUnresolvable(t, id, d.Host)
+				return
+			}
 			_, err := callEndpoint(tok, id, feegow.Request{})
 			kind, detail := classify(err)
-			globalReport.addDead(record{id: id, verified: feegow.Registry[id].Verified, kind: kind, detail: detail})
+			globalReport.addDead(record{id: id, verified: d.Verified, kind: kind, detail: detail})
 
 			if err == nil {
 				t.Errorf(
@@ -811,6 +887,149 @@ func TestContract_KnownDeadStayDead(t *testing.T) {
 // Write probe (opt-in): empty-body-only sondagem of POST/PUT. DELETE is
 // never included here, with or without the opt-in — see the file header.
 // ----------------------------------------------------------------------
+
+// writeProbeDenyIDs lists POST/PUT endpoints that are NEVER probed, even
+// with FEEGOW_CONTRACT_PROBE_WRITES=true, mapped to the reason.
+//
+// The write probe's whole safety argument is that an empty body "returns a
+// 4xx naming the required fields, without mutating anything". That is an
+// observed fact for the endpoints Fase 0/4b actually exercised — and an
+// EXTRAPOLATION for every endpoint it did not. For most writes the
+// extrapolation is cheap to be wrong about (a rejected empty payload).
+// For the ones below it is not: each either creates a record attached to a
+// real person or writes clinical data, and Registry's own Notes for
+// patient.upload_base64 say in as many words that Fase 0 skipped it ON
+// PURPOSE, "geraria um arquivo real no prontuário de um paciente de
+// teste". Probing it under the opt-in would do exactly the thing that note
+// exists to prevent, in the one situation (pointed at a real licença)
+// where it costs something.
+//
+// Deliberately a DENY list plus TestContract_WriteProbeClassified (which
+// fails when a POST/PUT is in neither list), not a bare deny list: a plain
+// deny list is fail-open — a write endpoint added to Registry next month
+// gets swept in by default, and nobody notices until it runs. The
+// companion test turns "someone forgot to classify this" into a red test
+// instead of a silent probe, and it needs no token and no network to do it.
+var writeProbeDenyIDs = map[feegow.EndpointID]string{
+	"patient.upload_base64": "cria um ARQUIVO no prontuário de um paciente real; Registry documenta que a Fase 0 " +
+		"evitou este endpoint exatamente por isso — corpo vazio nunca foi observado aqui",
+	"patient.create":  "cria um PACIENTE real; nenhuma chamada de corpo vazio foi observada",
+	"patient.edit":    "edita um PACIENTE real; nenhuma chamada de corpo vazio foi observada",
+	"patient.edit_v2": "edita um PACIENTE real; nenhuma chamada de corpo vazio foi observada",
+	"medical_reports.create": "grava um LAUDO (dado clínico) no prontuário; nenhuma chamada de corpo vazio foi " +
+		"observada",
+	"appoints.new_appoint":          "cria um AGENDAMENTO real na agenda da clínica",
+	"appoints.new_appoint_v2":       "cria um AGENDAMENTO real na agenda da clínica",
+	"appoints.reschedule":           "move um AGENDAMENTO real de horário",
+	"appoints.cancel_appoint":       "cancela um AGENDAMENTO real",
+	"appoints.status_update":        "altera o status de um AGENDAMENTO real",
+	"appoints.confirm":              "confirma um AGENDAMENTO real",
+	"financial.invoice_create":      "emite uma NOTA FISCAL real — irreversível do lado do fisco, não só do ERP",
+	"financial.voucher_create":      "cria um VOUCHER financeiro real",
+	"financial.voucher_cancel":      "cancela um VOUCHER financeiro real",
+	"financial.pay_movement":        "baixa um pagamento real",
+	"financial.pay_booking":         "baixa um pagamento real",
+	"financial.create_account":      "cria uma CONTA financeira real",
+	"financial.update_invoice_nfse": "altera uma NOTA FISCAL real",
+	"billing.insert_guide":          "insere uma GUIA de faturamento real",
+	"billing.edit_guide":            "altera uma GUIA de faturamento real",
+	"proposal.create":               "cria uma PROPOSTA comercial real",
+	"proposal.change_status":        "altera o status de uma PROPOSTA real",
+	"stock.location_list":           "estoque em HostCoreBR — ver knownDeadIDs; verificado por DNS, nunca por requisição",
+	"stock.product_entry":           "movimenta ESTOQUE real; host inacessível hoje, mas isso não é uma garantia deste repo",
+	"stock.product_movement":        "movimenta ESTOQUE real; host inacessível hoje, mas isso não é uma garantia deste repo",
+	"stock.product_exit":            "movimenta ESTOQUE real; host inacessível hoje, mas isso não é uma garantia deste repo",
+	"stock.product_insert":          "cadastra um PRODUTO real no estoque",
+	"financial.account_association": "associa conta a um lançamento real; contrato de corpo não confirmado por " +
+		"nenhuma sondagem (ver Registry Notes)",
+}
+
+// writeProbeAllowIDs lists the POST/PUT endpoints the probe MAY call with
+// an empty body under the opt-in. Every entry is here for one of two
+// measured reasons, never by analogy:
+//
+//   - it is a filterable READ that Feegow happens to expose over POST
+//     (financial.current_accounts, financial.cost_center,
+//     financial.financial_category, stock.product_position,
+//     stock.product_list, reports.generate — see each one's Registry
+//     Notes), so an empty body is just an unfiltered listing; or
+//   - Fase 0/4b actually issued a request against it and observed a 4xx
+//     naming the required fields, with no record created
+//     (financial.find_invoice_by_nfse).
+//
+// Anything not in this map and not in writeProbeDenyIDs fails
+// TestContract_WriteProbeClassified rather than being probed.
+var writeProbeAllowIDs = map[feegow.EndpointID]bool{
+	"financial.current_accounts":     true,
+	"financial.cost_center":          true,
+	"financial.financial_category":   true,
+	"financial.find_invoice_by_nfse": true,
+	"stock.product_position":         true,
+	"stock.product_list":             true,
+	"reports.generate":               true,
+}
+
+// TestContract_WriteProbeClassified is the guard that keeps
+// writeProbeDenyIDs from silently going stale. It needs no token and no
+// network: it only reads Registry, so it runs (and fails) on every
+// `-tags=contract` invocation, including the default one where every other
+// test in this file skips for lack of a token.
+//
+// A new POST/PUT endpoint added to Registry lands in neither map and fails
+// here — forcing whoever added it to state, in writing, whether an
+// empty-body call against it is something this suite is allowed to do.
+// That is the difference between a deny list and a decision.
+func TestContract_WriteProbeClassified(t *testing.T) {
+	for _, id := range sortedIDs(feegow.Registry) {
+		d := feegow.Registry[id]
+		if d.Method != http.MethodPost && d.Method != http.MethodPut {
+			continue
+		}
+		_, denied := writeProbeDenyIDs[id]
+		allowed := writeProbeAllowIDs[id]
+		switch {
+		case denied && allowed:
+			t.Errorf("%s está em writeProbeDenyIDs E em writeProbeAllowIDs — decida-se; na dúvida, negue", id)
+		case !denied && !allowed:
+			t.Errorf(
+				"%s (%s %s) é um endpoint de ESCRITA não classificado: adicione-o a writeProbeAllowIDs "+
+					"(só se existir uma chamada REAL observada de corpo vazio, ou se ele for uma leitura "+
+					"filtrável exposta via POST — cite a evidência na Nota do Registry) ou a "+
+					"writeProbeDenyIDs com o motivo. Enquanto não for classificado, a sondagem de escrita "+
+					"não pode rodar.",
+				id, d.Method, d.Path)
+		}
+	}
+
+	// The loop above only sees ids that EXIST in Registry, so it cannot
+	// notice an entry in either list that names an endpoint which was
+	// renamed or removed. That matters most for the deny list: a stale
+	// "patient.upload_base64" left behind after a rename reads like the
+	// endpoint is still protected while the renamed one falls through
+	// unclassified — the guard would fire on the new name, but only if
+	// someone bothers to look at which name it names. Checking both
+	// directions makes the two lists a description of Registry rather than
+	// a parallel copy of it that drifts.
+	for id := range writeProbeDenyIDs {
+		d, ok := feegow.Registry[id]
+		switch {
+		case !ok:
+			t.Errorf("writeProbeDenyIDs cita %q, que não existe mais no Registry — remova ou corrija o nome", id)
+		case d.Method != http.MethodPost && d.Method != http.MethodPut:
+			t.Errorf("writeProbeDenyIDs cita %q, que hoje é %s (não POST/PUT) — a sondagem de escrita nem "+
+				"chega nele; a entrada só cria falsa sensação de proteção", id, d.Method)
+		}
+	}
+	for id := range writeProbeAllowIDs {
+		d, ok := feegow.Registry[id]
+		switch {
+		case !ok:
+			t.Errorf("writeProbeAllowIDs cita %q, que não existe mais no Registry — remova ou corrija o nome", id)
+		case d.Method != http.MethodPost && d.Method != http.MethodPut:
+			t.Errorf("writeProbeAllowIDs cita %q, que hoje é %s (não POST/PUT)", id, d.Method)
+		}
+	}
+}
 
 func TestContract_WriteProbe(t *testing.T) {
 	tok := requireToken(t)
@@ -830,8 +1049,16 @@ func TestContract_WriteProbe(t *testing.T) {
 		if d.Method != http.MethodPost && d.Method != http.MethodPut {
 			continue // GET: TestContract_Liveness/Shape. DELETE: never.
 		}
-		if knownDeadIDs[id] {
-			continue // TestContract_KnownDeadStayDead already covers these.
+		if reason, denied := writeProbeDenyIDs[id]; denied {
+			t.Logf("%s NÃO sondado (deny list): %s", id, reason)
+			continue
+		}
+		if !writeProbeAllowIDs[id] {
+			// Unreachable while TestContract_WriteProbeClassified is green;
+			// kept as the fail-closed branch so an unclassified endpoint is
+			// never probed even if that test is filtered out by -run.
+			t.Errorf("%s não está classificado — ver TestContract_WriteProbeClassified; não sondado", id)
+			continue
 		}
 		tested++
 
