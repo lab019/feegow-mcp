@@ -97,6 +97,24 @@ func auditAdminWrite(tool string, pacienteID, agendamentoID int) {
 	}
 }
 
+// auditAdminWriteRecord is auditAdminWrite's counterpart for admin writes in
+// the Financeiro/Estoque groups, whose identifying context is a single
+// record id (a fatura, pagamento, voucher, produto — an amount of money or
+// a stock item, never a paciente/agendamento) that does not fit
+// auditAdminWrite's (pacienteID, agendamentoID) shape. label names WHAT
+// recordID is (e.g. "invoice_id", "voucher_id") so the log line says which
+// record a write touched — critical for the two irreversible DELETEs in
+// remover_registro_financeiro, where "something was removed" without an id
+// is useless after the fact. Same PII discipline as auditAdminWrite: label
+// and recordID must both be internal Feegow identifiers/field names, never
+// patient data (there is none in this domain to begin with).
+func auditAdminWriteRecord(tool, label string, recordID int) {
+	if !loglevel.Verbose() {
+		return
+	}
+	log.Printf("feegow: ADMIN WRITE %s — %s=%d", tool, label, recordID)
+}
+
 // auditAdminWriteQueue is auditAdminWrite's counterpart for
 // gerar_senha_atendimento specifically: that write does not act on a
 // paciente_id or agendamento_id (see GerarSenhaAtendimento's doc comment

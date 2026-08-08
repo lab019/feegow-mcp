@@ -57,6 +57,34 @@ func requireConfirmacaoOperador(confirmed bool, tool string) error {
 	return requireConfirmacao(confirmed, tool, "operador da clínica")
 }
 
+// requireConfirmacaoReforcada is requireConfirmacaoOperador's stronger
+// sibling, for the two operations Fase 4b singles out as the most
+// destructive in the entire project: remover_registro_financeiro's
+// invoice/payment removal (financial.invoice_remove, financial.payment_remove
+// — DELETE calls against the clínica's own financial records, irreversible
+// on the Feegow side, no "cancel" or "undo" endpoint documented anywhere in
+// this registry). A single confirmacao=true, indistinguishable from the one
+// every other admin write tool already accepts, is not enough friction for
+// an operation an agent could otherwise fire off exactly like
+// atualizar_paciente — this requires a SECOND, independently-named boolean
+// (cienteIrreversivel) that means something different from "eu quero fazer
+// isso": specifically, "eu entendo que isso é permanente e não pode ser
+// desfeito". Checked in the same order requireConfirmacao already
+// establishes (confirmation first, before any other argument is even
+// looked at) — an unconfirmed call must never leak which id was wrong.
+func requireConfirmacaoReforcada(confirmado, cienteIrreversivel bool, tool string) error {
+	if err := requireConfirmacaoOperador(confirmado, tool); err != nil {
+		return err
+	}
+	if !cienteIrreversivel {
+		return &ArgumentError{Msg: fmt.Sprintf(
+			"%s exige uma SEGUNDA confirmação (ciente_irreversivel=true) — este registro financeiro "+
+				"é apagado de forma PERMANENTE, sem desfazer; confirmacao=true sozinho não é suficiente "+
+				"para esta operação", tool)}
+	}
+	return nil
+}
+
 // validateAgendamentoID enforces that a caller-supplied agendamento_id is at
 // least well-formed (a positive integer) before any Feegow call — a
 // zero/negative id is a caller bug, not a posse (ownership) question, so it

@@ -810,13 +810,592 @@ var Registry = map[EndpointID]EndpointDescriptor{
 		Method:   http.MethodPost,
 		Path:     "/financial/find-invoice-by-nfse-number",
 		Envelope: EnvelopeStandard,
-		Verified: false,
+		Verified: true,
 		Notes: "Doc bug conhecido: doc.txt documenta como GET; confirmado pela Fase 0 que é POST " +
 			"(\"The GET method is not supported for this route. Supported methods: POST.\"). Campo " +
 			"do corpo é \"nfse_numero\" (confirmado por 422 real {\"nfse_numero\":[...]}), NÃO " +
 			"\"numero_nfse\" como o nome do parâmetro na URL de exemplo da doc sugere. Envelope de " +
-			"sucesso assumido {success,content} (padrão do grupo Financeiro), não observado " +
-			"diretamente — só o 422 foi exercitado.",
+			"sucesso CONFIRMADO pela Fase 4b: POST {\"nfse_numero\":\"1\"} → 200 " +
+			"{\"success\":true,\"total\":0,\"content\":[]} — o padrão {success,content} do grupo " +
+			"Financeiro, mais um campo \"total\" solto que EnvelopeStandard simplesmente ignora.",
+	},
+
+	// --- Financeiro, Fase 4b (api.feegow.com/v1/api) --------------------
+	//
+	// Every entry below was confirmed against the real sandbox by the
+	// Fase 4b smoke test (see internal/tools' consultar_financeiro,
+	// gerenciar_conta, gerenciar_voucher, remover_registro_financeiro
+	// doc comments for how each is used). A second wire family shows up
+	// here for the first time: several "core/financial/base/..." and
+	// "core/financial/..." endpoints are NOT the {success,content} Laravel
+	// envelope every endpoint above uses — they answer with a bare object
+	// on success (EnvelopeNone) and, on a validation failure, a NestJS-style
+	// {"message":[...],"error":"Bad Request","statusCode":400} shape this
+	// package's classifyError does not have a case for (400 falls into the
+	// generic, body-free UnexpectedStatusError — safe against PII by
+	// construction, since that type never carries the response body, but
+	// it does mean these endpoints' validation errors read as an opaque
+	// "status HTTP 400 não documentado" to a caller instead of a specific
+	// field list). Flagged per-entry below where it applies.
+
+	"financial.list_suppliers": {
+		ID:       "financial.list_suppliers",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/financial/list-suppliers",
+		Envelope: EnvelopeStandard,
+		Verified: true,
+		Notes: "Confirmado pela Fase 4b: GET sem parâmetros → 200 {\"success\":true,\"content\":[]," +
+			"\"total\":0}, sandbox sem fornecedores. limit/offset foram aceitos sem erro quando " +
+			"enviados, mas a resposta (sandbox vazia) não permitiu provar se filtram de verdade — " +
+			"por isso NENHUM PaginationSpec é declarado aqui (nada a confirmar não é o mesmo que " +
+			"confirmado): consultar_financeiro não expõe paginação para este tipo.",
+	},
+
+	// financial.search_supplier ("Informações do fornecedor") tem um bug
+	// real do lado da Feegow, confirmado pela Fase 4b: com o único
+	// parâmetro que a própria API exige (fornecedor_id) devidamente
+	// enviado, a resposta AINDA É um 422 — {"success":false,"cod_erro":0,
+	// "message":"Undefined index: id"}, um erro de PHP vazando (o
+	// handler busca um índice "id" que nunca existe na query string).
+	// Isso não é RouteNotFoundError (a mensagem não é vazia) nem um 422
+	// de validação normal (o campo que falta nem é o que foi documentado
+	// como obrigatório) — é um bug de implementação do lado da Feegow que
+	// parece impedir esta operação de sempre funcionar nesta licença.
+	"financial.search_supplier": {
+		ID:       "financial.search_supplier",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/financial/search-supplier",
+		Envelope: EnvelopeStandard,
+		Verified: false,
+		Notes: "GET sem parâmetros → 422 {\"fornecedor_id\":[\"O campo fornecedor id é " +
+			"obrigatório.\"]} (confirma o nome do parâmetro: fornecedor_id). MAS enviar " +
+			"fornecedor_id=1 (ou qualquer outro valor testado) TAMBÉM devolve 422, com uma " +
+			"mensagem completamente diferente: {\"success\":false,\"cod_erro\":0,\"message\":" +
+			"\"Undefined index: id\"} — um bug real do lado da Feegow (o handler parece indexar " +
+			"um parâmetro \"id\" que nunca é enviado). Não foi possível obter uma resposta de " +
+			"sucesso desta rota na sandbox. A tool (consultar_financeiro tipo=fornecedor) ainda " +
+			"chama o endpoint normalmente — o erro sanitizado que o operador vai ver é genérico " +
+			"(\"revise os dados informados\"), o que já é o comportamento correto mesmo sem saber " +
+			"se algum dia esse bug é corrigido do lado da Feegow.",
+	},
+
+	"financial.list_medical_transfer": {
+		ID:     "financial.list_medical_transfer",
+		Host:   HostAPI,
+		Method: http.MethodGet,
+		Path:   "/financial/list-medical-transfer",
+		DateParams: []DateParam{
+			{Role: DateRoleStart, WireName: "data_start", Format: DateBR},
+			{Role: DateRoleEnd, WireName: "data_end", Format: DateBR},
+		},
+		Envelope: EnvelopeStandard,
+		Verified: false,
+		Notes: "Confirmado pela Fase 4b que data_start/data_end são obrigatórios JUNTOS (422 " +
+			"nomeando os dois quando ausentes). Formato INCONCLUSIVO, mesma situação de lock.list: " +
+			"tanto DD-MM-YYYY quanto YYYY-MM-DD foram aceitos sem erro (200, content:[] — sandbox " +
+			"sem repasses cadastrados), então nenhum dos dois formatos pôde ser confirmado nem " +
+			"refutado por um resultado real. Implementado como DD-MM-YYYY por analogia com o nome " +
+			"do parâmetro (\"data_\", não \"date_\") bater com a convenção que /financial/list-invoice " +
+			"já usa (DD-MM-YYYY, ESPECIFICACAO.md §5) — mas é uma inferência por convenção de nome, " +
+			"não uma observação direta, exatamente o tipo de suposição que este pacote normalmente " +
+			"evita; documentado aqui em vez de escondido.",
+	},
+
+	// financial.list_invoice ("Listar contas") — data_start/data_end
+	// (DD-MM-YYYY, ESPECIFICACAO.md §5) JUNTOS, tipo_transacao e
+	// unidade_id são todos obrigatórios, confirmado pela Fase 4b em duas
+	// rodadas de 422: a primeira nomeou data_start/data_end/tipo_transacao/
+	// unidade_id como ausentes; com os quatro enviados (tipo_transacao=1,
+	// um palpite numérico razoável) a resposta seguinte foi um 422 NOVO,
+	// só sobre tipo_transacao: "Parâmetro 'tipo_transacao' é obrigatório e
+	// deve ser 'C', 'D' ou 'T'" — prova que o campo é um enum de string
+	// (C/D/T), não numérico. Com tipo_transacao=C a chamada teve sucesso
+	// (200, content:[] — sandbox sem contas cadastradas na janela).
+	"financial.list_invoice": {
+		ID:     "financial.list_invoice",
+		Host:   HostAPI,
+		Method: http.MethodGet,
+		Path:   "/financial/list-invoice",
+		DateParams: []DateParam{
+			{Role: DateRoleStart, WireName: "data_start", Format: DateBR},
+			{Role: DateRoleEnd, WireName: "data_end", Format: DateBR},
+		},
+		Envelope: EnvelopeStandard,
+		Verified: true,
+		Notes: "data_start/data_end (DD-MM-YYYY), tipo_transacao ('C', 'D' ou 'T' — STRING, " +
+			"apesar de um número parecer razoável à primeira vista) e unidade_id são todos " +
+			"obrigatórios — confirmado ponta a ponta pela Fase 4b, incluindo uma chamada de " +
+			"sucesso real com os quatro parâmetros corretos.",
+	},
+
+	// financial.list_sales ("Listagem de Vendas") usa date_start/date_end
+	// (YYYY-MM-DD — nome DIFERENTE de list-invoice, que usa data_start em
+	// DD-MM-YYYY; a mesma "Listar contas x Listar vendas" divergência que
+	// motivou a nota no prompt desta fase). unidade_id também é
+	// obrigatório aqui, o que não estava óbvio antes de medir: a primeira
+	// rodada (só sem parâmetros) já mostrou os três; enviar só
+	// date_start/date_end confirmou que unidade_id continua exigido
+	// separadamente. Sucesso real confirmado com os três.
+	"financial.list_sales": {
+		ID:     "financial.list_sales",
+		Host:   HostAPI,
+		Method: http.MethodGet,
+		Path:   "/financial/list-sales",
+		DateParams: []DateParam{
+			{Role: DateRoleStart, WireName: "date_start", Format: ISO8601},
+			{Role: DateRoleEnd, WireName: "date_end", Format: ISO8601},
+		},
+		Envelope: EnvelopeStandard,
+		Verified: true,
+		Notes: "date_start/date_end (YYYY-MM-DD, nome \"date_\" — diferente de list-invoice, que " +
+			"usa \"data_\" em DD-MM-YYYY) E unidade_id são todos obrigatórios — confirmado ponta a " +
+			"ponta pela Fase 4b, incluindo uma chamada de sucesso real com os três.",
+	},
+
+	// financial.credit_card_flags ("Obter bandeiras de cartão de crédito")
+	// — confirmado ponta a ponta pela Fase 4b: GET sem parâmetros → 200,
+	// 31 bandeiras reais devolvidas. O campo do nome da bandeira é
+	// "Bandeira" (com B maiúsculo) — o único campo com essa capitalização
+	// em toda a superfície financeira medida até aqui; os outros campos
+	// da mesma entrada ("id") continuam minúsculos.
+	"financial.credit_card_flags": {
+		ID:       "financial.credit_card_flags",
+		Host:     HostAPI,
+		Method:   http.MethodGet,
+		Path:     "/financial/credit-card-flags",
+		Envelope: EnvelopeStandard,
+		Verified: true,
+		Notes: "Sem parâmetros. Content é uma lista de {\"id\":N,\"Bandeira\":\"...\"} — reparar no " +
+			"\"Bandeira\" com B maiúsculo (confirmado pela Fase 4b), inconsistente com o resto do " +
+			"payload (\"id\" minúsculo) e com a convenção do restante da API.",
+	},
+
+	// financial.current_accounts, financial.cost_center e
+	// financial.financial_category (respectivamente "Obter Contas
+	// Correntes", "Centros de Custos" e "Categoria financeira / Plano de
+	// contas") são POST mas funcionam como uma LEITURA filtrável — corpo
+	// vazio já devolve a listagem inteira, sem exigir nenhum campo. As
+	// três compartilham o MESMO envelope, nunca visto nas seções acima
+	// deste registry: {"data":[...],"count":N,"page":1,"perPage":100,
+	// "pages":N,"version":"3.0","foundParameters":[...]} — sem campo
+	// "success" (por isso EnvelopeNone), com paginação page/perPage
+	// (PaginationPagePerPage) e um campo "foundParameters" que a própria
+	// API usa para ecoar quais filtros ela reconheceu — confirmado
+	// listando os nomes reais dos filtros de cada endpoint.
+	"financial.current_accounts": {
+		ID:     "financial.current_accounts",
+		Host:   HostAPI,
+		Method: http.MethodPost,
+		Path:   "/core/financial/base/current-accounts",
+		Pagination: PaginationSpec{
+			Kind:        PaginationPagePerPage,
+			LimitParam:  "perPage",
+			OffsetParam: "page",
+		},
+		Envelope: EnvelopeNone,
+		Verified: true,
+		Notes: "Corpo vazio → 200, foundParameters=[\"id\",\"unity\",\"accountType\",\"perPage\"," +
+			"\"page\"] — confirma os três filtros opcionais (id, unity, accountType) além da " +
+			"paginação. Confirmado ponta a ponta pela Fase 4b.",
+	},
+
+	"financial.cost_center": {
+		ID:     "financial.cost_center",
+		Host:   HostAPI,
+		Method: http.MethodPost,
+		Path:   "/core/financial/base/cost-center",
+		Pagination: PaginationSpec{
+			Kind:        PaginationPagePerPage,
+			LimitParam:  "perPage",
+			OffsetParam: "page",
+		},
+		Envelope: EnvelopeNone,
+		Verified: true,
+		Notes: "Corpo vazio → 200, foundParameters=[\"perPage\",\"page\"] — sem nenhum filtro além " +
+			"da paginação (sandbox sem centros de custo cadastrados). Confirmado ponta a ponta pela " +
+			"Fase 4b, mesmo envelope de financial.current_accounts.",
+	},
+
+	"financial.financial_category": {
+		ID:     "financial.financial_category",
+		Host:   HostAPI,
+		Method: http.MethodPost,
+		Path:   "/core/financial/base/financial-category",
+		Pagination: PaginationSpec{
+			Kind:        PaginationPagePerPage,
+			LimitParam:  "perPage",
+			OffsetParam: "page",
+		},
+		Envelope: EnvelopeNone,
+		Verified: true,
+		Notes: "Corpo vazio → 200 com 17 categorias reais (\"plano de contas\": type expense/income, " +
+			"id, name, position, parentId), foundParameters=[\"id\",\"type\",\"perPage\",\"page\"] — " +
+			"confirma os filtros id/type além da paginação. Confirmado ponta a ponta pela Fase 4b, " +
+			"mesmo envelope de financial.current_accounts.",
+	},
+
+	// financial.update_invoice_nfse ("Atualizar Número da Nota Fiscal
+	// Eletrônica") — só o 422 de corpo vazio foi exercitado pela Fase 4b,
+	// deliberadamente (uma chamada de sucesso real editaria uma invoice
+	// de verdade na sandbox, sem uma invoice de teste conhecida para
+	// apontar). Nomeia os dois campos obrigatórios com clareza.
+	"financial.update_invoice_nfse": {
+		ID:       "financial.update_invoice_nfse",
+		Host:     HostAPI,
+		Method:   http.MethodPost,
+		Path:     "/financial/update-invoice-nfse-number",
+		Envelope: EnvelopeStandard,
+		Verified: false,
+		Notes: "422 de corpo vazio confirmado pela Fase 4b: {\"invoice_id\":[\"O campo invoice id " +
+			"é obrigatório.\"],\"nfse_numero\":[\"O campo nfse numero é obrigatório.\"]} — nomes " +
+			"snake_case, mesmo estilo Laravel do resto do grupo Financeiro em api.feegow.com " +
+			"(diferente do estilo camelCase/NestJS de financial.pay_movement e " +
+			"financial.invoice_create abaixo, apesar de todos viverem sob o mesmo host). Envelope " +
+			"de sucesso assumido {success,content} por analogia com o resto do grupo — não " +
+			"observado diretamente (só o 422 foi exercitado, de propósito).",
+	},
+
+	// financial.invoice_remove e financial.payment_remove ("Remover
+	// Fatura" / "Remover Pagamento") são as duas escritas mais
+	// destrutivas do escopo desta fase — apagam registro financeiro real
+	// do cliente. Por instrução explícita desta fase, NENHUMA delas foi
+	// exercitada além do 422/400 de corpo vazio: o suficiente para
+	// confirmar Host/Path/Method/nome do campo, sem nunca arriscar
+	// apagar algo real. Ambas usam DELETE de verdade (confirmado: um POST
+	// no mesmo path devolveu 404 REAL — "Página não encontrada", não o
+	// fingerprint de 422 vazio — provando que só DELETE está registrado
+	// nessa rota).
+	"financial.invoice_remove": {
+		ID:       "financial.invoice_remove",
+		Host:     HostAPI,
+		Method:   http.MethodDelete,
+		Path:     "/core/financial/invoice/remove",
+		Envelope: EnvelopeNone,
+		Verified: false,
+		Notes: "DELETE de corpo vazio → 400 {\"success\":false,\"message\":\"Field invoiceId not " +
+			"found\"} — confirma o nome do campo (invoiceId, camelCase) e o método (POST no mesmo " +
+			"path → 404 real, não o fingerprint de rota inexistente). Deliberadamente NÃO " +
+			"exercitado com um invoiceId real (apagaria um registro financeiro de verdade) — " +
+			"instrução explícita desta fase. Envelope {success,message} — SEM campo \"content\" — " +
+			"por isso EnvelopeNone; a resposta de sucesso real nunca foi observada.",
+	},
+
+	"financial.payment_remove": {
+		ID:       "financial.payment_remove",
+		Host:     HostAPI,
+		Method:   http.MethodDelete,
+		Path:     "/core/financial/payment/remove",
+		Envelope: EnvelopeNone,
+		Verified: false,
+		Notes: "Mesma situação de financial.invoice_remove: DELETE de corpo vazio → 400 " +
+			"{\"success\":false,\"message\":\"Field paymentId not found\"} (campo paymentId, " +
+			"camelCase). Deliberadamente NÃO exercitado com um paymentId real. EnvelopeNone pelo " +
+			"mesmo motivo.",
+	},
+
+	// financial.pay_movement e financial.pay_booking ("Pagamento de
+	// Conta" / "Pagar Agendamento") — só o 422 de corpo vazio foi
+	// exercitado, deliberadamente: uma chamada de sucesso real
+	// registraria um pagamento de verdade contra uma invoice/agendamento
+	// da sandbox. Nomes de campo em camelCase (diferente do resto do
+	// grupo Financeiro em Laravel/snake_case), mas ainda validados no
+	// estilo Laravel (422, mapa campo->mensagens) — uma mistura que só a
+	// medição revelou.
+	"financial.pay_movement": {
+		ID:       "financial.pay_movement",
+		Host:     HostAPI,
+		Method:   http.MethodPost,
+		Path:     "/financial/pay-movement",
+		Envelope: EnvelopeStandard,
+		Verified: false,
+		Notes: "422 de corpo vazio confirmado pela Fase 4b, nomeando 8 campos obrigatórios em " +
+			"camelCase: invoiceId, movementId, amount, associationId, accountId, paymentMethod, " +
+			"paymentDate, paymentName. Tipos exatos (amount em centavos? paymentMethod é um id " +
+			"numérico?) NÃO confirmados — a validação 422 só afirma \"obrigatório\", sem checar " +
+			"tipo. Envelope de sucesso assumido {success,content} por analogia — não observado.",
+	},
+
+	"financial.pay_booking": {
+		ID:       "financial.pay_booking",
+		Host:     HostAPI,
+		Method:   http.MethodPost,
+		Path:     "/financial/pay-booking",
+		Envelope: EnvelopeStandard,
+		Verified: false,
+		Notes: "422 de corpo vazio confirmado pela Fase 4b, nomeando 5 campos obrigatórios em " +
+			"camelCase: bookingId, amount, associationId, accountId, paymentMethod, paymentDate " +
+			"(sem paymentName, diferente de financial.pay_movement). Tipos exatos não confirmados. " +
+			"Envelope de sucesso assumido {success,content} por analogia — não observado.",
+	},
+
+	// financial.create_account ("Criar Conta por Agendamento") — ÚNICO
+	// endpoint financeiro desta fase com uma resposta REAL end-to-end
+	// (agendamento_id=1, que não existe na sandbox): 200 {"success":false,
+	// "msg":"O agendamento_id informado não se encontra na nossa base de
+	// dados."}. Achado importante: NÃO usa o envelope {success,content}
+	// padrão — o campo de mensagem se chama "msg", não "content". Se este
+	// endpoint fosse registrado como EnvelopeStandard, parseSuccess
+	// procuraria por "content" (ausente), success:false ainda viraria um
+	// ConflictError mas com Content="" — a mensagem de erro real da
+	// Feegow ("agendamento_id não encontrado") seria descartada em
+	// silêncio. EnvelopeNone evita esse bug: a tool decodifica
+	// success/msg do corpo cru diretamente.
+	"financial.create_account": {
+		ID:       "financial.create_account",
+		Host:     HostAPI,
+		Method:   http.MethodPost,
+		Path:     "/financial/create-account",
+		Envelope: EnvelopeNone,
+		Verified: true,
+		Notes: "Corpo vazio → 422 {\"agendamento_id\":[\"O campo agendamento_id é obrigatório.\"]} " +
+			"(Laravel-style). Com agendamento_id=1 (inexistente na sandbox) → 200 REAL " +
+			"{\"success\":false,\"msg\":\"O agendamento_id informado não se encontra na nossa base " +
+			"de dados.\"} — confirma ponta a ponta que o envelope de sucesso NÃO é {success," +
+			"content}: o campo é \"msg\". EnvelopeStandard aqui perderia essa mensagem (procuraria " +
+			"por \"content\", que não existe).",
+	},
+
+	// financial.voucher_create ("Criação de Voucher") — a Fase 4b não
+	// conseguiu confirmar NENHUM contrato aqui: toda tentativa (GET no
+	// path — método errado esperado —, POST com corpo vazio, POST com um
+	// corpo plausível de {paciente_id,valor,descricao}) devolveu o MESMO
+	// HTML de erro 500 genérico do Feegow ("Ocorreu um erro"), não um
+	// JSON de validação. Ou seja: nenhuma medição conseguiu distinguir
+	// "campo errado" de "rota quebrada nesta sandbox/licença" — ao
+	// contrário de financial.pay_movement/pay_booking acima (que pelo
+	// menos nomeiam os campos via 422 real). tools.GerenciarVoucher
+	// (ação "criar") NÃO chama este endpoint por causa disso — devolve
+	// erro claro de indisponibilidade em vez de uma chamada que
+	// certamente vai falhar de forma opaca contra um contrato inventado.
+	"financial.voucher_create": {
+		ID:       "financial.voucher_create",
+		Host:     HostAPI,
+		Method:   http.MethodPost,
+		Path:     "/core/financial/voucher/create",
+		Envelope: EnvelopeNone,
+		Verified: false,
+		Notes: "500 HTML genérico (\"Ocorreu um erro\") em TODA tentativa da Fase 4b — GET (método " +
+			"errado esperado), POST corpo vazio, POST com corpo plausível {paciente_id,valor," +
+			"descricao}. Nunca um JSON de validação nomeando campos, ao contrário de todo outro " +
+			"POST desta seção. Contrato genuinamente NÃO confirmável nesta sandbox — " +
+			"tools.GerenciarVoucher não chama este endpoint (ver seu doc comment).",
+	},
+
+	// financial.voucher_cancel ("Cancelamento de Voucher") — 400 real
+	// (estilo NestJS, igual financial.invoice_create abaixo) nomeando os
+	// três campos. A resposta de SUCESSO nunca foi observada (cancelar um
+	// voucher de verdade exigiria primeiro criar um, e voucher_create
+	// está quebrado nesta sandbox — ver acima), então o envelope de
+	// sucesso é uma incógnita: tools.GerenciarVoucher (ação "cancelar")
+	// decodifica um campo "success" por analogia com o resto do grupo
+	// (financial.create_account, financial.invoice_remove) e trata sua
+	// ausência/false como falha, em vez de assumir sucesso só porque a
+	// chamada não voltou erro de transporte — ver o doc comment da tool.
+	"financial.voucher_cancel": {
+		ID:       "financial.voucher_cancel",
+		Host:     HostAPI,
+		Method:   http.MethodPost,
+		Path:     "/core/financial/voucher/cancel",
+		Envelope: EnvelopeNone,
+		Verified: false,
+		Notes: "POST corpo vazio → 400 {\"message\":[\"id must be an integer number\",\"O campo " +
+			"motivo deve ser um dos seguintes valores: ERRO_EMISSAO, FRAUDE_DETECTADA, DUPLICIDADE, " +
+			"OUTRO\",\"codigo_motivo must be a string\"],\"error\":\"Bad Request\"," +
+			"\"statusCode\":400} — estilo NestJS (mesmo formato de financial.invoice_create e " +
+			"financial.account_association abaixo). Confirma três campos: id (int), motivo (enum " +
+			"string) e codigo_motivo (string). Resposta de sucesso NÃO observada (dependeria de um " +
+			"voucher real já existente).",
+	},
+
+	"financial.voucher_list": {
+		ID:     "financial.voucher_list",
+		Host:   HostAPI,
+		Method: http.MethodGet,
+		Path:   "/core/financial/voucher/list",
+		Pagination: PaginationSpec{
+			Kind:        PaginationPagePerPage,
+			LimitParam:  "limit",
+			OffsetParam: "page",
+		},
+		Envelope: EnvelopeNone,
+		Verified: true,
+		Notes: "Confirmado ponta a ponta pela Fase 4b: GET sem parâmetros → 200 {\"total\":0," +
+			"\"page\":1,\"limit\":10,\"lastPage\":0,\"data\":[]}; GET ?page=2&limit=5 → 200 com " +
+			"page/limit ecoados de volta, provando que a paginação é real. Envelope ÚNICO nesta " +
+			"seção: nem {success,content} nem o {data,count,page,perPage,...} de " +
+			"financial.current_accounts — usa \"limit\" (não \"perPage\") e \"total\"/\"lastPage\" " +
+			"em vez de \"count\"/\"pages\". Mesmo PaginationKind (PagePerPage, página 1-indexada), " +
+			"nome de parâmetro diferente.",
+	},
+
+	// financial.invoice_create ("Criação da Conta") — o corpo mais
+	// complexo desta fase: validação NestJS (estilo diferente do resto
+	// do grupo Financeiro) nomeando uma estrutura aninhada. type é um
+	// enum de UM caractere (C ou D — crédito/débito, mesma convenção
+	// binária de outros campos "tipo" já vistos na API), date é
+	// ISO-8601, table/user/unity são ids inteiros, account é um objeto
+	// não-vazio, items e installments são arrays não-vazios — nenhum dos
+	// três (account/items/installments) teve sua forma INTERNA
+	// confirmada (a validação para na primeira camada; um corpo com esses
+	// três campos presentes, mas vazios/malformados por dentro, não foi
+	// tentado para não arriscar uma criação real).
+	"financial.invoice_create": {
+		ID:       "financial.invoice_create",
+		Host:     HostAPI,
+		Method:   http.MethodPost,
+		Path:     "/core/financial/invoice/create",
+		Envelope: EnvelopeNone,
+		Verified: false,
+		Notes: "POST corpo vazio → 400 estilo NestJS nomeando: type (enum \"C\"/\"D\", " +
+			"obrigatório), date (ISO-8601, <=10 chars, obrigatório), table (int, obrigatório), " +
+			"user (int, obrigatório), unity (int, obrigatório), account (objeto não-vazio, " +
+			"obrigatório), items (array com >=1 item, obrigatório), installments (array com >=1 " +
+			"item, obrigatório). A forma INTERNA de account/items/installments não foi confirmada " +
+			"— a validação de primeira camada não foi ultrapassada de propósito (evitar risco de " +
+			"criação real). tools.GerenciarConta (ação \"criar\") expõe os campos de topo " +
+			"tipados e passa account/items/installments como JSON livre, documentando essa lacuna " +
+			"para quem chamar a tool.",
+	},
+
+	// financial.account_association ("Associação de conta financeira") —
+	// a Fase 4b tentou três corpos diferentes (vazio, {"id":1},
+	// {"accountId":1,"unity":1}) e todos os três devolveram O MESMO erro:
+	// 400 {"message":"Account not found","error":"Bad Request",
+	// "statusCode":400} — sem NENHUMA validação nomeando campos (diferente
+	// de todo outro endpoint NestJS desta seção, que sempre lista os
+	// campos que faltam). Como toda tentativa cai direto numa checagem
+	// "conta não encontrada", em vez de listar campos obrigatórios, não é
+	// possível confirmar o nome real de nenhum campo do corpo desta rota
+	// nesta sandbox.
+	"financial.account_association": {
+		ID:       "financial.account_association",
+		Host:     HostAPI,
+		Method:   http.MethodPost,
+		Path:     "/core/financial/account/association",
+		Envelope: EnvelopeNone,
+		Verified: false,
+		Notes: "Três corpos tentados pela Fase 4b — {}, {\"id\":1}, {\"accountId\":1,\"unity\":1} " +
+			"— e os três devolveram o MESMO 400 {\"message\":\"Account not found\",\"error\":" +
+			"\"Bad Request\",\"statusCode\":400}, sem NUNCA listar campos obrigatórios (diferente " +
+			"de financial.invoice_create/voucher_cancel, que sempre nomeiam o que falta). " +
+			"Contrato do corpo genuinamente NÃO confirmável nesta sandbox — tools.GerenciarConta " +
+			"NÃO expõe uma ação para este endpoint por causa disso (ver seu doc comment), em vez " +
+			"de arriscar um contrato inventado.",
+	},
+
+	// --- Estoque, Fase 4b (api.feegow.com/v1/api) -----------------------
+	//
+	// Dos 7 endpoints de Estoque do inventário (ESPECIFICACAO.md §13),
+	// apenas os 3 sob api.feegow.com são alcançáveis: os outros 4 vivem
+	// sob core.feegow.com.br (HostCoreBR), confirmado MORTO pela Fase 0
+	// (stock.location_list acima) — três entradas adicionais foram
+	// acrescentadas abaixo só para completar o inventário/documentação,
+	// sem tool alguma por trás.
+
+	"stock.product_position": {
+		ID:     "stock.product_position",
+		Host:   HostAPI,
+		Method: http.MethodPost,
+		Path:   "/core/financial/base/product/position",
+		Pagination: PaginationSpec{
+			Kind:        PaginationPagePerPage,
+			LimitParam:  "perPage",
+			OffsetParam: "page",
+		},
+		Envelope: EnvelopeNone,
+		Verified: true,
+		Notes: "Corpo vazio → 200, foundParameters=[\"fabricante\",\"produto\",\"categoria\"," +
+			"\"localizacao\",\"dataInicio\",\"dataFim\",\"perPage\",\"page\"] — confirma 6 filtros " +
+			"opcionais além da paginação. Mesmo envelope {data,count,page,perPage,pages,version," +
+			"foundParameters} de financial.current_accounts, mas count vem como STRING (\"0\"), " +
+			"não número, aqui e em stock.product_list — inconsistência confirmada pela Fase 4b. " +
+			"dataInicio/dataFim: formato não confirmado (sandbox vazia, nenhum filtro de data " +
+			"testado com sucesso real) — repassados como string livre, sem tradução DateParam.",
+	},
+
+	"stock.product_list": {
+		ID:     "stock.product_list",
+		Host:   HostAPI,
+		Method: http.MethodPost,
+		Path:   "/core/financial/base/product/list",
+		Pagination: PaginationSpec{
+			Kind:        PaginationPagePerPage,
+			LimitParam:  "perPage",
+			OffsetParam: "page",
+		},
+		Envelope: EnvelopeNone,
+		Verified: true,
+		Notes: "Corpo vazio → 200, foundParameters=[\"id\",\"category\",\"location\",\"producer\"," +
+			"\"type\",\"perPage\",\"page\"] — confirma 4 filtros opcionais (nomes em inglês, " +
+			"diferente de stock.product_position, que usa nomes em português) além da paginação. " +
+			"Mesmo envelope de stock.product_position, incluindo o count-como-string.",
+	},
+
+	// stock.product_insert ("Inserir Produto") — o endpoint com a
+	// confirmação mais forte desta fase inteira: a Fase 4b não só viu o
+	// 400 de validação (corpo vazio, nomeando 11 campos numéricos
+	// obrigatórios), como também completou uma inserção REAL (todos os
+	// 11 campos como inteiros=1) e recebeu 201 com o registro criado
+	// (id incluído). Por isso o SuccessStatus=201 nesta descriptor —
+	// sem ele, Client.Call trataria essa resposta de sucesso real como
+	// um erro (ver o doc comment de EndpointDescriptor.SuccessStatus).
+	// Confirma também que NENHUM campo de nome/descrição textual é
+	// exigido — só os 11 numéricos.
+	"stock.product_insert": {
+		ID:            "stock.product_insert",
+		Host:          HostAPI,
+		Method:        http.MethodPost,
+		Path:          "/core/financial/financial-stock/product/insert",
+		Envelope:      EnvelopeNone,
+		SuccessStatus: http.StatusCreated,
+		Verified:      true,
+		Notes: "POST corpo vazio → 400 nomeando 11 campos obrigatórios, todos inteiros: " +
+			"TipoProduto, CategoriaID, FabricanteID, LocalizacaoID, DiasAvisoValidade, " +
+			"ApresentacaoQuantidade, ApresentacaoUnidade, EstoqueMinimo, EstoqueMaximo, " +
+			"PrecoCompra, PrecoVenda. POST com os 11 campos = 1 → 201 REAL (não 200!) com o " +
+			"registro criado ecoado em camelCase + sysUser + id. Nenhum campo de nome/descrição " +
+			"exigido. ATENÇÃO: cria um produto de verdade na sandbox (id=1, dados sintéticos sem " +
+			"significado) — efeito colateral aceito pela Fase 4b, mesmo espírito dos agendamentos " +
+			"de teste que a Fase 0 já criava/cancelava.",
+	},
+
+	"stock.product_entry": {
+		ID:       "stock.product_entry",
+		Host:     HostCoreBR,
+		Method:   http.MethodPost,
+		Path:     "/financial2/external/financial-stock/product/entry",
+		Envelope: EnvelopeNone,
+		Verified: false,
+		Notes: "INACESSÍVEL neste ambiente — mesmo motivo de stock.location_list acima: " +
+			"core.feegow.com.br (HostCoreBR) não resolve nesta sandbox. Registrado só para " +
+			"completar o inventário de Estoque (ESPECIFICACAO.md §13); nenhuma tool chama este " +
+			"endpoint.",
+	},
+
+	"stock.product_movement": {
+		ID:       "stock.product_movement",
+		Host:     HostCoreBR,
+		Method:   http.MethodPost,
+		Path:     "/financial2/external/financial-stock/product/movement",
+		Envelope: EnvelopeNone,
+		Verified: false,
+		Notes: "INACESSÍVEL neste ambiente — mesmo motivo de stock.location_list acima. " +
+			"Registrado só para completar o inventário de Estoque; nenhuma tool chama este " +
+			"endpoint.",
+	},
+
+	"stock.product_exit": {
+		ID:       "stock.product_exit",
+		Host:     HostCoreBR,
+		Method:   http.MethodPost,
+		Path:     "/financial2/external/financial-stock/product/exit",
+		Envelope: EnvelopeNone,
+		Verified: false,
+		Notes: "INACESSÍVEL neste ambiente — mesmo motivo de stock.location_list acima. " +
+			"Registrado só para completar o inventário de Estoque; nenhuma tool chama este " +
+			"endpoint.",
 	},
 
 	// --- Financeiro (api.feegow.com/v1/api e core.feegow.com) -----------

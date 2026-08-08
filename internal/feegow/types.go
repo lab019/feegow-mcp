@@ -200,6 +200,24 @@ type EndpointDescriptor struct {
 	// out to share this limit gets the same client-side guard for free.
 	MaxRangeDays int
 
+	// SuccessStatus overrides the HTTP status code Client.Call treats as
+	// "this succeeded" — zero (the default) means http.StatusOK (200),
+	// which is every endpoint in this registry except one:
+	// stock.product_insert (POST /core/financial/financial-stock/product/insert)
+	// answers a successful insert with 201, confirmed end-to-end by the
+	// Fase 4b smoke test (an empty body 400'd naming every required field;
+	// a filled body actually inserted a product and returned 201 with the
+	// created record, id included). Without this field Client.Call's
+	// httpResp.StatusCode != http.StatusOK check would treat that 201 as a
+	// failure and route it through classifyError, which has no case for
+	// 201 either — it would silently fall into UnexpectedStatusError,
+	// misreporting a real success as "status HTTP 201 não documentado".
+	// Declared on the descriptor rather than hard-coded to an endpoint ID,
+	// same reasoning as MaxRangeDays: any other endpoint this registry
+	// later learns uses a non-200 success status gets the same handling
+	// for free. Must be a 2xx value when set — see Validate.
+	SuccessStatus int
+
 	// Verified is false when doc.txt did not give this endpoint's
 	// translation with enough clarity to trust without a real-license
 	// smoke test (ESPECIFICACAO.md §0/§8). An unverified descriptor is
@@ -229,8 +247,20 @@ func (d EndpointDescriptor) Validate() error {
 	if d.Host == "" {
 		return fmt.Errorf("%s: empty Host", d.ID)
 	}
-	if d.Method != http.MethodGet && d.Method != http.MethodPost {
-		return fmt.Errorf("%s: Method must be GET or POST, got %q", d.ID, d.Method)
+	switch d.Method {
+	case http.MethodGet, http.MethodPost:
+	case http.MethodDelete:
+		// Confirmed by the Fase 4b smoke test: /core/financial/invoice/remove
+		// and /core/financial/payment/remove (the two destructive removal
+		// endpoints) genuinely require DELETE — a POST to the same path
+		// returned a real 404 ("Página não encontrada"), not the 422
+		// RouteNotFoundError fingerprint every other wrong-method probe in
+		// this registry produces, proving DELETE (not POST) is the route
+		// Feegow actually registered. Client.buildRequest already sends
+		// whatever d.Method says with a JSON body for any non-GET method, so
+		// no transport change was needed — only this allow-list.
+	default:
+		return fmt.Errorf("%s: Method must be GET, POST or DELETE, got %q", d.ID, d.Method)
 	}
 	if !strings.HasPrefix(d.Path, "/") {
 		return fmt.Errorf("%s: Path %q must start with \"/\"", d.ID, d.Path)
@@ -260,6 +290,10 @@ func (d EndpointDescriptor) Validate() error {
 
 	if d.MaxRangeDays < 0 {
 		return fmt.Errorf("%s: MaxRangeDays must not be negative, got %d", d.ID, d.MaxRangeDays)
+	}
+
+	if d.SuccessStatus != 0 && (d.SuccessStatus < 200 || d.SuccessStatus >= 300) {
+		return fmt.Errorf("%s: SuccessStatus must be a 2xx status when set, got %d", d.ID, d.SuccessStatus)
 	}
 
 	switch d.Pagination.Kind {

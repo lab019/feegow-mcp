@@ -169,9 +169,20 @@ func TestEndpointDescriptor_Validate_CatchesIncompleteTranslation(t *testing.T) 
 			d: EndpointDescriptor{
 				ID:       "fake.bad_method",
 				Host:     HostAPI,
-				Method:   http.MethodDelete,
+				Method:   http.MethodPut,
 				Path:     "/fake",
 				Verified: true,
+			},
+		},
+		{
+			name: "SuccessStatus not a 2xx",
+			d: EndpointDescriptor{
+				ID:            "fake.bad_success_status",
+				Host:          HostAPI,
+				Method:        http.MethodGet,
+				Path:          "/fake",
+				SuccessStatus: 404,
+				Verified:      true,
 			},
 		},
 	}
