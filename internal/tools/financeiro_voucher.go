@@ -128,23 +128,38 @@ func gerenciarVoucherCancelar(ctx context.Context, client *feegow.Client, args G
 	// financial.voucher_cancel's success shape was never observed by the
 	// Fase 4b smoke test (cancelling a real voucher requires one to exist,
 	// and voucher/create is unusable in this sandbox — see this file's doc
-	// comment). Unlike every other EnvelopeNone write in this package,
-	// there is no known "success" field here to route through
-	// checkEnvelopeNoneSuccess: client.Call itself already turns any
-	// non-2xx (the one shape actually observed — 400 NestJS validation)
-	// into an error before this line is ever reached, so "no error" is the
-	// only signal this function has to go on. Documented here rather than
-	// silently assumed.
-	if _, err := client.Call(ctx, "financial.voucher_cancel", feegow.Request{
+	// comment). Unlike financial.pay_movement/pay_booking (EnvelopeStandard,
+	// checked upstream by client.Call), this endpoint is EnvelopeNone: the
+	// same family already demonstrated the "HTTP 200 + {"success":false,...}"
+	// business-failure pattern twice (financial.create_account,
+	// financial.invoice_remove), so "client.Call returned no transport
+	// error" is NOT proof of success here — trusting it would repeat
+	// exactly the gap those two closed. Decode the same defensive way: a
+	// response with no "success" field decodes Success to its zero value
+	// (false) and fails closed rather than reading an unrecognized shape as
+	// a silent success.
+	resp, err := client.Call(ctx, "financial.voucher_cancel", feegow.Request{
 		Params: map[string]any{
 			"id":            *args.VoucherID,
 			"motivo":        args.Motivo,
 			"codigo_motivo": args.CodigoMotivo,
 		},
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
-	auditAdminWrite("gerenciar_voucher:cancelar", 0, 0)
+
+	var body struct {
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal(resp.Content, &body); err != nil {
+		return nil, fmt.Errorf("tools: decoding core/financial/voucher/cancel response: %w", err)
+	}
+	if err := checkEnvelopeNoneSuccess(body.Success); err != nil {
+		return nil, err
+	}
+
+	auditAdminWriteRecord("gerenciar_voucher:cancelar", "voucher_id", *args.VoucherID)
 	return &GerenciarVoucherResult{Cancelado: true}, nil
 }
 

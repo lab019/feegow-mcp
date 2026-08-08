@@ -1189,8 +1189,10 @@ var Registry = map[EndpointID]EndpointDescriptor{
 	// voucher de verdade exigiria primeiro criar um, e voucher_create
 	// está quebrado nesta sandbox — ver acima), então o envelope de
 	// sucesso é uma incógnita: tools.GerenciarVoucher (ação "cancelar")
-	// trata "a chamada não voltou erro" como sucesso, sem checar nenhum
-	// campo específico — ver o doc comment da tool para a ressalva.
+	// decodifica um campo "success" por analogia com o resto do grupo
+	// (financial.create_account, financial.invoice_remove) e trata sua
+	// ausência/false como falha, em vez de assumir sucesso só porque a
+	// chamada não voltou erro de transporte — ver o doc comment da tool.
 	"financial.voucher_cancel": {
 		ID:       "financial.voucher_cancel",
 		Host:     HostAPI,

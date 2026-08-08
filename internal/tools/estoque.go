@@ -289,6 +289,6 @@ func movimentarEstoqueInserirProduto(ctx context.Context, client *feegow.Client,
 		return nil, fmt.Errorf("tools: decoding stock/product/insert response: %w", err)
 	}
 
-	auditAdminWrite("movimentar_estoque:inserir_produto", 0, 0)
+	auditAdminWriteRecord("movimentar_estoque:inserir_produto", "produto_id", body.ID)
 	return &MovimentarEstoqueResult{Inserido: true, ProdutoID: body.ID}, nil
 }

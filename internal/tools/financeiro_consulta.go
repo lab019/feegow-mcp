@@ -261,18 +261,50 @@ func consultarFinanceiroPlanoContas(ctx context.Context, client *feegow.Client, 
 	})
 }
 
-// requireDateRange validates that both dataInicio/dataFim are present and
-// ISO-8601, returning them ready to plug into feegow.Request.DateStart/
-// DateEnd. tipo names which tipo the error message should point at.
+// tetoJanelaFinanceiroDias limita a largura da janela data_inicio–data_fim
+// aceita por tipo=repasses/contas/vendas (as três listagens que passam por
+// requireDateRange). Este teto é NOSSO, imposto por este serviço — NÃO é um
+// espelho de nenhuma regra da Feegow, ao contrário de
+// feegow.EndpointDescriptor.MaxRangeDays (usado por /appoints/search, cujos
+// 180 dias replicam um 409 REAL que a própria Feegow devolve — ver o doc
+// comment de MaxRangeDays em internal/feegow/types.go). Medido diretamente
+// contra a API real para list-invoice/list-sales/list-medical-transfer:
+// janelas de 1 ano E de 5 anos foram aceitas nos três endpoints — a Feegow
+// não impõe limite algum aqui.
+//
+// Sem este teto, uma clínica movimentada pedindo vários anos de contas
+// despejaria dezenas de milhares de linhas no contexto do LLM — custo,
+// latência e uma truncagem que perde dado em silêncio. 365 dias é generoso
+// para uso legítimo (um exercício fiscal inteiro numa única chamada) e pode
+// ser afrouxado livremente no futuro: ao contrário de MaxRangeDays, nenhuma
+// mudança aqui pode "quebrar" um contrato da Feegow, porque não existe
+// contrato da Feegow sendo espelhado — só a preferência deste serviço por
+// respostas de tamanho prático.
+const tetoJanelaFinanceiroDias = 365
+
+// requireDateRange validates that both dataInicio/dataFim are present,
+// ISO-8601 and within tetoJanelaFinanceiroDias, returning them ready to plug
+// into feegow.Request.DateStart/DateEnd. tipo names which tipo the error
+// message should point at.
 func requireDateRange(dataInicio, dataFim, tipo string) (string, string, error) {
 	if dataInicio == "" || dataFim == "" {
 		return "", "", &ArgumentError{Msg: fmt.Sprintf("data_inicio e data_fim são obrigatórios para tipo=%s", tipo)}
 	}
-	if _, err := time.Parse(feegow.ISO8601, dataInicio); err != nil {
+	start, err := time.Parse(feegow.ISO8601, dataInicio)
+	if err != nil {
 		return "", "", &ArgumentError{Msg: "data_inicio deve estar em ISO-8601 (YYYY-MM-DD)"}
 	}
-	if _, err := time.Parse(feegow.ISO8601, dataFim); err != nil {
+	end, err := time.Parse(feegow.ISO8601, dataFim)
+	if err != nil {
 		return "", "", &ArgumentError{Msg: "data_fim deve estar em ISO-8601 (YYYY-MM-DD)"}
+	}
+	if dias := int(end.Sub(start).Hours() / 24); dias > tetoJanelaFinanceiroDias {
+		return "", "", &ArgumentError{Msg: fmt.Sprintf(
+			"o período consultado para tipo=%s precisa ter no máximo %d dias corridos — este é um "+
+				"teto imposto por este serviço (a Feegow não limita a janela nestes endpoints), para "+
+				"evitar respostas com dezenas de milhares de linhas; reduza data_inicio/data_fim",
+			tipo, tetoJanelaFinanceiroDias,
+		)}
 	}
 	return dataInicio, dataFim, nil
 }

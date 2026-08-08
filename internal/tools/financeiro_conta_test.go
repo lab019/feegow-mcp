@@ -88,7 +88,7 @@ func TestGerenciarConta_Criar_Success(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/core/financial/invoice/create", func(w http.ResponseWriter, r *http.Request) {
 		decodeJSONBody(t, r, &gotBody)
-		writeJSON(t, w, http.StatusOK, `{"id":1}`)
+		writeJSON(t, w, http.StatusOK, `{"success":true,"id":1}`)
 	})
 	client := newTestClient(t, mux)
 
@@ -106,6 +106,55 @@ func TestGerenciarConta_Criar_Success(t *testing.T) {
 	}
 	if gotBody["table"] != float64(1) || gotBody["user"] != float64(2) || gotBody["unity"] != float64(3) {
 		t.Fatalf("wire body = %+v, want table/user/unity passed through as ints", gotBody)
+	}
+}
+
+// TestGerenciarConta_Criar_RejectsEmptyAccountObject proves an empty
+// account:{} (a well-formed JSON object, but empty) is rejected the same as
+// an omitted account — the field's own doc comment and the endpoint's
+// Registry Notes both say "objeto não-vazio, obrigatório", and only checking
+// for nil let an empty map slip through.
+func TestGerenciarConta_Criar_RejectsEmptyAccountObject(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected Feegow call for an empty account object: %s %s", r.Method, r.URL)
+	})
+	client := newTestClient(t, mux)
+
+	table, user, unity := 1, 1, 1
+	_, err := GerenciarConta(ctxWithToken("tok"), client, GerenciarContaArgs{
+		Acao: "criar", Confirmacao: true, Type: "C", Date: "2026-01-01",
+		Table: &table, User: &user, Unity: &unity,
+		Account:      map[string]any{},
+		Items:        []any{map[string]any{"id": 1}},
+		Installments: []any{map[string]any{"id": 1}},
+	})
+	var argErr *ArgumentError
+	if !errors.As(err, &argErr) {
+		t.Fatalf("GerenciarConta(account={}) error = %v (%T), want *ArgumentError", err, err)
+	}
+}
+
+// TestGerenciarConta_Criar_ServerRejection_SurfacesError proves a
+// {"success":false,...} body from financial.invoice_create — the same
+// business-failure pattern already confirmed for financial.create_account
+// and financial.invoice_remove — is treated as a failure, not reported as
+// Sucesso=true just because the HTTP call itself returned no error.
+func TestGerenciarConta_Criar_ServerRejection_SurfacesError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/core/financial/invoice/create", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, `{"success":false,"message":"Tabela particular inválida"}`)
+	})
+	client := newTestClient(t, mux)
+
+	table, user, unity := 1, 1, 1
+	_, err := GerenciarConta(ctxWithToken("tok"), client, GerenciarContaArgs{
+		Acao: "criar", Confirmacao: true, Type: "C", Date: "2026-01-01",
+		Table: &table, User: &user, Unity: &unity,
+		Account: map[string]any{"id": 1}, Items: []any{map[string]any{"id": 1}}, Installments: []any{map[string]any{"id": 1}},
+	})
+	if !errors.Is(err, ErrOperacaoNaoConfirmadaFeegow) {
+		t.Fatalf("GerenciarConta error = %v, want ErrOperacaoNaoConfirmadaFeegow", err)
 	}
 }
 
@@ -214,6 +263,29 @@ func TestGerenciarConta_Pagar_Success_UsesCamelCaseWireFields(t *testing.T) {
 	}
 }
 
+// TestGerenciarConta_Pagar_AuditsWrite proves the audit line names the
+// invoice_id that was paid, not just that some payment happened.
+func TestGerenciarConta_Pagar_AuditsWrite(t *testing.T) {
+	buf := captureLog(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/financial/pay-movement", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, `{"success":true,"content":"ok"}`)
+	})
+	client := newTestClient(t, mux)
+
+	_, err := GerenciarConta(ctxWithToken("tok"), client, GerenciarContaArgs{
+		Acao: "pagar", Confirmacao: true,
+		InvoiceID: intPtr(321), MovementID: intPtr(2), AssociationID: intPtr(3), AccountID: intPtr(4),
+		Amount: intPtr(1000), PaymentMethod: intPtr(1), PaymentDate: "2026-01-01", PaymentName: "Pagamento",
+	})
+	if err != nil {
+		t.Fatalf("GerenciarConta: %v", err)
+	}
+	if !strings.Contains(buf.String(), "ADMIN WRITE gerenciar_conta:pagar — invoice_id=321") {
+		t.Fatalf("write not audited with the paid invoice's id: %s", buf.String())
+	}
+}
+
 func TestGerenciarConta_PagarAgendamento_RequiresEveryField(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -259,5 +331,27 @@ func TestGerenciarConta_AtualizarNfse_Success(t *testing.T) {
 	}
 	if gotBody["invoice_id"] != float64(1) || gotBody["nfse_numero"] != "12345" {
 		t.Fatalf("wire body = %+v, want invoice_id/nfse_numero (snake_case)", gotBody)
+	}
+}
+
+// TestGerenciarConta_AtualizarNfse_AuditsWrite proves the audit line names
+// the invoice_id whose NFS-e number was updated, not just that some update
+// happened.
+func TestGerenciarConta_AtualizarNfse_AuditsWrite(t *testing.T) {
+	buf := captureLog(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/financial/update-invoice-nfse-number", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, `{"success":true,"content":"ok"}`)
+	})
+	client := newTestClient(t, mux)
+
+	_, err := GerenciarConta(ctxWithToken("tok"), client, GerenciarContaArgs{
+		Acao: "atualizar_nfse", Confirmacao: true, InvoiceID: intPtr(654), NfseNumero: "12345",
+	})
+	if err != nil {
+		t.Fatalf("GerenciarConta: %v", err)
+	}
+	if !strings.Contains(buf.String(), "ADMIN WRITE gerenciar_conta:atualizar_nfse — invoice_id=654") {
+		t.Fatalf("write not audited with the updated invoice's id: %s", buf.String())
 	}
 }

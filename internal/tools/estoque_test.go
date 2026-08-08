@@ -227,7 +227,7 @@ func TestMovimentarEstoque_InserirProduto_AuditsWrite(t *testing.T) {
 	if _, err := MovimentarEstoque(ctxWithToken("tok"), client, args); err != nil {
 		t.Fatalf("MovimentarEstoque: %v", err)
 	}
-	if !strings.Contains(buf.String(), "ADMIN WRITE movimentar_estoque:inserir_produto") {
-		t.Fatalf("write not audited: %s", buf.String())
+	if !strings.Contains(buf.String(), "ADMIN WRITE movimentar_estoque:inserir_produto — produto_id=1") {
+		t.Fatalf("write not audited with the inserted product's id: %s", buf.String())
 	}
 }

@@ -100,7 +100,10 @@ func removerPagamento(ctx context.Context, client *feegow.Client, args RemoverRe
 
 // doRemove is the shared DELETE call both branches make: same wire shape
 // ({success,message}, EnvelopeNone — see financial.invoice_remove's Registry
-// Notes), just a different endpoint id and field name.
+// Notes), just a different endpoint id and field name. The audit line
+// carries recordID (labeled with wireField, e.g. "invoiceId=4711") — this is
+// the most destructive write in the package, so the log MUST say which
+// fatura/pagamento was removed, not just that a removal happened.
 func doRemove(ctx context.Context, client *feegow.Client, id feegow.EndpointID, wireField string, recordID int, auditTool string) (*RemoverRegistroFinanceiroResult, error) {
 	resp, err := client.Call(ctx, id, feegow.Request{
 		Params: map[string]any{wireField: recordID},
@@ -119,6 +122,6 @@ func doRemove(ctx context.Context, client *feegow.Client, id feegow.EndpointID, 
 		return nil, err
 	}
 
-	auditAdminWrite(auditTool, 0, 0)
+	auditAdminWriteRecord(auditTool, wireField, recordID)
 	return &RemoverRegistroFinanceiroResult{Removido: true}, nil
 }

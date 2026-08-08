@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -87,15 +88,14 @@ func TestGerenciarVoucher_Cancelar_RequiresVoucherIDAndCodigoMotivo(t *testing.T
 }
 
 // TestGerenciarVoucher_Cancelar_Success proves a valid cancelamento reaches
-// /core/financial/voucher/cancel with id/motivo/codigo_motivo, and that "no
-// error from client.Call" is treated as success — see the tool's doc
-// comment on why no success field can be checked here.
+// /core/financial/voucher/cancel with id/motivo/codigo_motivo, and that a
+// {"success":true,...} body is decoded and treated as success.
 func TestGerenciarVoucher_Cancelar_Success(t *testing.T) {
 	var gotBody map[string]any
 	mux := http.NewServeMux()
 	mux.HandleFunc("/core/financial/voucher/cancel", func(w http.ResponseWriter, r *http.Request) {
 		decodeJSONBody(t, r, &gotBody)
-		writeJSON(t, w, http.StatusOK, `{}`)
+		writeJSON(t, w, http.StatusOK, `{"success":true,"message":"Voucher cancelado"}`)
 	})
 	client := newTestClient(t, mux)
 
@@ -110,6 +110,46 @@ func TestGerenciarVoucher_Cancelar_Success(t *testing.T) {
 	}
 	if gotBody["id"] != float64(7) || gotBody["motivo"] != "DUPLICIDADE" || gotBody["codigo_motivo"] != "dup-123" {
 		t.Fatalf("wire body = %+v, want id/motivo/codigo_motivo", gotBody)
+	}
+}
+
+// TestGerenciarVoucher_Cancelar_ServerRejection_SurfacesError proves a
+// {"success":false,...} body — the pattern financial.create_account and
+// financial.invoice_remove already demonstrated for this endpoint family —
+// is treated as a failure, not a silent success, even though client.Call
+// itself sees no transport error (HTTP 200).
+func TestGerenciarVoucher_Cancelar_ServerRejection_SurfacesError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/core/financial/voucher/cancel", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, `{"success":false,"message":"Voucher já cancelado"}`)
+	})
+	client := newTestClient(t, mux)
+
+	_, err := GerenciarVoucher(ctxWithToken("tok"), client, GerenciarVoucherArgs{
+		Acao: "cancelar", Confirmacao: true, VoucherID: intPtr(7), Motivo: "OUTRO", CodigoMotivo: "x",
+	})
+	if !errors.Is(err, ErrOperacaoNaoConfirmadaFeegow) {
+		t.Fatalf("GerenciarVoucher error = %v, want ErrOperacaoNaoConfirmadaFeegow", err)
+	}
+}
+
+// TestGerenciarVoucher_Cancelar_AuditsWrite proves the audit line names the
+// voucher_id that was cancelled, not just that some voucher was.
+func TestGerenciarVoucher_Cancelar_AuditsWrite(t *testing.T) {
+	buf := captureLog(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/core/financial/voucher/cancel", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, `{"success":true,"message":"ok"}`)
+	})
+	client := newTestClient(t, mux)
+
+	if _, err := GerenciarVoucher(ctxWithToken("tok"), client, GerenciarVoucherArgs{
+		Acao: "cancelar", Confirmacao: true, VoucherID: intPtr(7), Motivo: "OUTRO", CodigoMotivo: "x",
+	}); err != nil {
+		t.Fatalf("GerenciarVoucher: %v", err)
+	}
+	if !strings.Contains(buf.String(), "ADMIN WRITE gerenciar_voucher:cancelar — voucher_id=7") {
+		t.Fatalf("write not audited with voucher_id: %s", buf.String())
 	}
 }
 

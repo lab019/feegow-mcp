@@ -162,7 +162,10 @@ func TestRemoverRegistroFinanceiro_Pagamento_Success_UsesPaymentIdField(t *testi
 }
 
 // TestRemoverRegistroFinanceiro_AuditsWrite proves every successful removal
-// is audited — the same discipline every other admin write tool follows.
+// is audited with the id of the record actually removed — not just that
+// SOME removal happened. This is the most destructive write in the package;
+// a log line without the id is useless after the fact to answer "which
+// fatura was deleted?".
 func TestRemoverRegistroFinanceiro_AuditsWrite(t *testing.T) {
 	buf := captureLog(t)
 	mux := http.NewServeMux()
@@ -172,11 +175,32 @@ func TestRemoverRegistroFinanceiro_AuditsWrite(t *testing.T) {
 	client := newTestClient(t, mux)
 
 	if _, err := RemoverRegistroFinanceiro(ctxWithToken("tok"), client, RemoverRegistroFinanceiroArgs{
-		Tipo: "fatura", Confirmacao: true, CienteIrreversivel: true, InvoiceID: intPtr(1),
+		Tipo: "fatura", Confirmacao: true, CienteIrreversivel: true, InvoiceID: intPtr(4711),
 	}); err != nil {
 		t.Fatalf("RemoverRegistroFinanceiro: %v", err)
 	}
-	if !strings.Contains(buf.String(), "ADMIN WRITE remover_registro_financeiro:fatura") {
-		t.Fatalf("write not audited: %s", buf.String())
+	if !strings.Contains(buf.String(), "ADMIN WRITE remover_registro_financeiro:fatura — invoiceId=4711") {
+		t.Fatalf("write not audited with the removed record's id: %s", buf.String())
+	}
+}
+
+// TestRemoverRegistroFinanceiro_Pagamento_AuditsWrite proves the same for
+// tipo=pagamento, with its own field label (paymentId, not invoiceId) — the
+// two branches of doRemove must never blur which kind of id was removed.
+func TestRemoverRegistroFinanceiro_Pagamento_AuditsWrite(t *testing.T) {
+	buf := captureLog(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/core/financial/payment/remove", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, `{"success":true,"message":"ok"}`)
+	})
+	client := newTestClient(t, mux)
+
+	if _, err := RemoverRegistroFinanceiro(ctxWithToken("tok"), client, RemoverRegistroFinanceiroArgs{
+		Tipo: "pagamento", Confirmacao: true, CienteIrreversivel: true, PaymentID: intPtr(99),
+	}); err != nil {
+		t.Fatalf("RemoverRegistroFinanceiro: %v", err)
+	}
+	if !strings.Contains(buf.String(), "ADMIN WRITE remover_registro_financeiro:pagamento — paymentId=99") {
+		t.Fatalf("write not audited with the removed record's id: %s", buf.String())
 	}
 }

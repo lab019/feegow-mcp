@@ -157,7 +157,15 @@ func gerenciarContaCriar(ctx context.Context, client *feegow.Client, args Gerenc
 	if args.Table == nil || args.User == nil || args.Unity == nil {
 		return nil, &ArgumentError{Msg: "table, user e unity são todos obrigatórios para acao=criar"}
 	}
-	if args.Account == nil {
+	// account é declarado como "objeto não-vazio, obrigatório" tanto no
+	// campo (doc comment acima) quanto no Notes de financial.invoice_create
+	// no registry — args.Account == nil só pega o caso omitido; um "{}"
+	// literal decodifica para um map[string]any vazio, que passaria por
+	// essa checagem sem o type-assert abaixo. Qualquer forma que não seja
+	// um objeto JSON (map) também é rejeitada: o campo nunca aceita outra
+	// coisa.
+	accountObj, ok := args.Account.(map[string]any)
+	if !ok || len(accountObj) == 0 {
 		return nil, &ArgumentError{Msg: "account é obrigatório (objeto não-vazio) para acao=criar"}
 	}
 	if len(args.Items) == 0 {
@@ -167,7 +175,7 @@ func gerenciarContaCriar(ctx context.Context, client *feegow.Client, args Gerenc
 		return nil, &ArgumentError{Msg: "installments é obrigatório (pelo menos 1 item) para acao=criar"}
 	}
 
-	if _, err := client.Call(ctx, "financial.invoice_create", feegow.Request{
+	resp, err := client.Call(ctx, "financial.invoice_create", feegow.Request{
 		Params: map[string]any{
 			"type":         args.Type,
 			"date":         args.Date,
@@ -178,9 +186,31 @@ func gerenciarContaCriar(ctx context.Context, client *feegow.Client, args Gerenc
 			"items":        args.Items,
 			"installments": args.Installments,
 		},
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
+
+	// financial.invoice_create's real success body was never observed by
+	// the Fase 4b smoke test (see its Registry Notes) — EnvelopeNone with a
+	// {success,...} shape only ASSUMED by analogy with the rest of the
+	// group. This same family already demonstrated the "HTTP 200 +
+	// {"success":false,...}" business-failure pattern twice
+	// (financial.create_account, financial.invoice_remove), so trusting a
+	// bare 2xx here would be exactly the class of bug those two guard
+	// against. If the field is genuinely absent from a real response,
+	// Success decodes to its zero value (false) and this fails closed —
+	// an unrecognized shape must never read as a silent success.
+	var body struct {
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal(resp.Content, &body); err != nil {
+		return nil, fmt.Errorf("tools: decoding financial/invoice/create response: %w", err)
+	}
+	if err := checkEnvelopeNoneSuccess(body.Success); err != nil {
+		return nil, err
+	}
+
 	auditAdminWrite("gerenciar_conta:criar", 0, 0)
 	return &GerenciarContaResult{Sucesso: true}, nil
 }
@@ -245,7 +275,7 @@ func gerenciarContaPagar(ctx context.Context, client *feegow.Client, args Gerenc
 	}); err != nil {
 		return nil, err
 	}
-	auditAdminWrite("gerenciar_conta:pagar", 0, 0)
+	auditAdminWriteRecord("gerenciar_conta:pagar", "invoice_id", *args.InvoiceID)
 	return &GerenciarContaResult{Sucesso: true}, nil
 }
 
@@ -298,6 +328,6 @@ func gerenciarContaAtualizarNfse(ctx context.Context, client *feegow.Client, arg
 	}); err != nil {
 		return nil, err
 	}
-	auditAdminWrite("gerenciar_conta:atualizar_nfse", 0, 0)
+	auditAdminWriteRecord("gerenciar_conta:atualizar_nfse", "invoice_id", *args.InvoiceID)
 	return &GerenciarContaResult{Sucesso: true}, nil
 }
