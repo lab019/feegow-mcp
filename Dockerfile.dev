@@ -1,0 +1,22 @@
+# Imagem só de DEV: roda `go run` sobre uma árvore de código bind-montada, o
+# que dá ao compose de desenvolvimento um comportamento de hot-reload (reinicie
+# o container / use um watcher por cima) sem passar por um build multi-stage.
+#
+# Diferente da imagem de produção (Dockerfile), esta é a `golang:1.24` cheia —
+# tem shell e curl, e por isso o serviço em dev PODE ter um HEALTHCHECK no
+# compose. A de produção é distroless e não pode; é uma diferença deliberada
+# entre os dois ambientes, não um esquecimento.
+FROM golang:1.24
+
+WORKDIR /src
+
+ENV CGO_ENABLED=0
+ENV PORT=8087
+EXPOSE 8087
+
+# go.mod/go.sum são COPIADOS (não bind-montados) para o cache de módulos já vir
+# quente da build; o resto do código chega pelo bind-mount do docker-compose.
+COPY go.mod go.sum ./
+RUN go mod download
+
+CMD ["go", "run", "./..."]
