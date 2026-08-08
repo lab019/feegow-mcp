@@ -1,0 +1,92 @@
+name: release
+
+# Versionamento SEMVER automatizado da plataforma LAB019: a cada push na main,
+# calcula a próxima versão a partir dos Conventional Commits (fix → patch,
+# feat → minor, BREAKING CHANGE/"!" → major), cria a tag vX.Y.Z e publica um
+# GitHub Release com notas geradas. Commits docs/chore/refactor/test/ci não
+# geram release. A tag git é a fonte de verdade da versão.
+
+on:
+  push:
+    branches: [main]
+    # Espelha o paths-ignore do build-push: um fix:/feat: que só toca docs
+    # geraria tag/Release sem imagem sha correspondente (o build seria pulado).
+    # O bump não se perde: entra no cálculo do próximo push com código.
+    paths-ignore: ["**/*.md", "docs/**"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    outputs:
+      new_tag: ${{ steps.semver.outputs.new_tag }}
+      new_version: ${{ steps.semver.outputs.new_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Sem nenhuma tag v* no repo, o github-tag-action ancora num v0.0.0
+      # sintético apontando para o HEAD e analisa 0 commits — nunca releasaria.
+      # A primeira execução cria a âncora v0.1.0 (ponto de partida do
+      # versionamento); os fix/feat seguintes bumpam a partir dela.
+      - name: Bootstrap da tag âncora (só na primeira execução)
+        run: |
+          if [ -z "$(git ls-remote --tags origin 'refs/tags/v*')" ]; then
+            git tag v0.1.0
+            git push origin v0.1.0
+            echo "tag âncora v0.1.0 criada — releases passam a valer do próximo fix/feat"
+          fi
+
+      - id: semver
+        uses: mathieudutour/github-tag-action@v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tag_prefix: v
+          default_bump: false
+
+      - name: Publica o GitHub Release
+        if: steps.semver.outputs.new_tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.semver.outputs.new_tag }}
+          generate_release_notes: true
+
+  image:
+    # Retagueia no GHCR a imagem sha-<commit> (publicada pelo build-push deste
+    # mesmo push) com a versão nova (ghcr.io/<repo>:X.Y.Z). Não rebuilda — e
+    # não dá para disparar o build-push pela tag: tags criadas com o
+    # GITHUB_TOKEN não disparam outros workflows. Espera a imagem do commit
+    # aparecer e cria a tag por manifest.
+    needs: tag
+    if: needs.tag.outputs.new_tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Retaguear imagem sha com a versão
+        run: |
+          src="ghcr.io/${{ github.repository }}:sha-${{ github.sha }}"
+          dst="ghcr.io/${{ github.repository }}:${{ needs.tag.outputs.new_version }}"
+          for i in $(seq 1 40); do
+            if docker buildx imagetools create -t "$dst" "$src"; then
+              echo "ok: $dst"
+              exit 0
+            fi
+            echo "imagem $src ainda não disponível (tentativa $i/40); aguardando 30s"
+            sleep 30
+          done
+          echo "::error::imagem $src não apareceu no GHCR — o build-push deste commit falhou ou foi pulado (paths-ignore)?"
+          exit 1
