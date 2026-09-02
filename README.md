@@ -294,7 +294,6 @@ AgentSpec.
 
 ## License
 
-> **TODO antes de tornar o repositório público:** escolher a licença e
-> adicionar o arquivo `LICENSE`, trocando esta nota por uma linha do tipo
-> `MIT. See [LICENSE](LICENSE).` Sem esse arquivo, o padrão legal é
-> "todos os direitos reservados" — ninguém pode usar, copiar ou derivar.
+Copyright 2026 Lab019.
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
