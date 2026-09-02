@@ -103,10 +103,10 @@ já no `tools/list` — um agente de atendimento que enxerga `remover_pagamento`
 na lista pode chamá-la, e a única defesa robusta é a tool não existir naquela
 superfície.
 
-| Registro | Rota | Auth | Segredo | Toolset |
-| --- | --- | --- | --- | --- |
-| `feegow` | `POST /mcp` | `byok:feegow` | `mcp/feegow` | atendimento (35 endpoints) |
-| `feegow-admin` | `POST /mcp/admin` | `byok:feegow_admin` | `mcp/feegow_admin` | superset (85 endpoints) |
+| Registro | Rota | Auth | Segredo | `allow_anonymous` | Toolset |
+| --- | --- | --- | --- | --- | --- |
+| `feegow` | `POST /mcp` | `byok:feegow` | `mcp/feegow` | `true` | atendimento (35 endpoints) |
+| `feegow-admin` | `POST /mcp/admin` | `byok:feegow_admin` | `mcp/feegow_admin` | `false` | superset (85 endpoints) |
 
 ### O gate do admin é dado do tenant, nunca configuração
 
@@ -121,8 +121,28 @@ Feegow com esse poder — decisão do cliente, no ERP dele.
 
 Complementos, todos também fora do env:
 
-- `allow_anonymous: false` nos dois registros — sessão anônima (voz, widget
-  público) não alcança nenhum dos perfis.
+- `allow_anonymous` **difere** entre os dois registros, e é o único lugar onde
+  os perfis divergem em política: `true` no atendimento, `false` no admin.
+
+  No atendimento tem que ser `true`. O canal é PÚBLICO por decisão de produto —
+  quem fala é o paciente, por voz ou widget, sem login — e é justamente por isso
+  que esse perfil trabalha com identidade **declarada** (os dois fatos do §6),
+  erro uniforme e retorno mínimo. Com `false` esse desenho inteiro vira peso
+  morto: o dispatcher do runtime barra a tool em `role == "anonymous" and not
+  allow_anonymous` **antes** de resolver o `byok`, e o canal público morre na
+  primeira chamada.
+
+  Sessão anônima **tem** `org_id` — vem de `app_metadata.org_id`, setado
+  autoritativamente pelo Supabase — então o `byok:feegow` resolve o token
+  daquela clínica normalmente. Uma versão anterior desta seção afirmava o
+  contrário (que anônimo não teria org, logo não teria segredo a resolver) e
+  concluía `false` nos dois; era falso, e foi o que produziu o valor errado
+  aqui. O compose da `agent-operation` sempre registrou `true` no atendimento.
+
+  No admin continua `false`, e aí sim por segurança: são as tools de
+  financeiro, estoque, laudos e a remoção irreversível de fatura e pagamento. A
+  ausência do segredo `feegow_admin` já é barreira real, mas não é a única que
+  se quer ali.
 - Qual specialist carrega qual server é `tools=["feegow"]` vs
   `tools=["feegow-admin"]` no AgentSpec, que o próprio tenant gerencia.
 
