@@ -7,6 +7,10 @@ agent: scheduling, patients, financials, inventory, reports.
 It is a stateless translator. No database, no cache, no OAuth, no session.
 The clinic's own Feegow token comes in, a normalized result goes out.
 
+> **Unofficial.** This is an independent project. It is not affiliated with,
+> endorsed by, or supported by Feegow. See [Trademark and
+> affiliation](#trademark-and-affiliation).
+
 ```
 MCP client (Claude Code, Cursor, your agent)
         │  token da clínica
@@ -292,8 +296,34 @@ AgentSpec.
 
 `ESPECIFICACAO.md` §2, §3 and §11 document that integration in full.
 
+## Trademark and affiliation
+
+This is an **independent, unofficial** project. It is not affiliated with,
+endorsed by, sponsored by or supported by Feegow, and it is not a Feegow
+product. Do not contact Feegow's support about it — open an issue here
+instead.
+
+"Feegow" and "Feegow Clinic" are trademarks of their respective owner. They
+are used here only to state, descriptively and truthfully, which system this
+software interoperates with. No claim of ownership over those marks is made
+or implied.
+
+This project talks to Feegow's documented public API, using a token the
+clinic itself issues from its own Feegow account. It contains no Feegow
+source code and no copy of Feegow's documentation: the endpoint descriptions
+in `internal/feegow/Registry` are factual API characteristics plus this
+project's own empirical findings, many of which correct the published
+documentation (see `ESPECIFICACAO.md` §8).
+
+You remain responsible for your own use of the Feegow API, including
+whatever your clinic's own agreement with Feegow says about integrations.
+Feegow may change or withdraw its API at any time.
+
 ## License
 
 Copyright 2026 Lab019.
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
+
+The Apache-2.0 license applies to this software. It grants no rights in
+Feegow's trademarks, API or services — see above.
