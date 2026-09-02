@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lab019/feegow-mcp/internal/buildinfo"
 	"github.com/lab019/feegow-mcp/internal/mcpserver"
 )
 
@@ -80,7 +81,7 @@ func runStdio(profileFlag string) error {
 	ctx, stop := signalContext()
 	defer stop()
 
-	log.Printf("feegow-mcp %s: sessão stdio, perfil=%s", version(), profile)
+	log.Printf("feegow-mcp %s: sessão stdio, perfil=%s", buildinfo.Version(), profile)
 	if err := mcpserver.RunStdio(ctx, profile, token); err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}
@@ -103,7 +104,7 @@ func runHTTP() error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("feegow-mcp %s listening on :%s (log_level=%s)", version(), port, logLevel)
+		log.Printf("feegow-mcp %s listening on :%s (log_level=%s)", buildinfo.Version(), port, logLevel)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
@@ -136,7 +137,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Println(version())
+		fmt.Println(buildinfo.Version())
 		return
 	}
 
