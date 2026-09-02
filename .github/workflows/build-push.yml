@@ -47,6 +47,14 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
+          # Carimba no binário a MESMA string da tag de imagem sha-<commit>
+          # que este build publica, para o que o serviço reporta em runtime
+          # (log de startup, --version, handshake MCP) apontar para uma tag
+          # que se pode dar pull. A SEMVER não serve aqui: ela só é calculada
+          # pelo workflow de release DEPOIS deste build, que então retagueia
+          # esta imagem sem rebuildar. Ver o ARG VERSION no Dockerfile.
+          build-args: |
+            VERSION=sha-${{ github.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

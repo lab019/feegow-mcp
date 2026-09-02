@@ -17,27 +17,35 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/lab019/feegow-mcp/internal/auth"
+	"github.com/lab019/feegow-mcp/internal/buildinfo"
 	"github.com/lab019/feegow-mcp/internal/feegow"
 )
 
 const (
 	atendimentoServerName = "feegow-mcp"
 	adminServerName       = "feegow-mcp-admin"
-	serverVersion         = "0.1.0"
 )
+
+// serverVersion is what an MCP client sees as "serverInfo.version" in the
+// initialize handshake. It resolves at runtime from the build itself
+// (internal/buildinfo) rather than being a literal here: a literal is a
+// second place to bump on every release, and this file is exactly where
+// that went wrong before — it announced "0.1.0" to every client while the
+// repo's releases were already automated SEMVER.
+func serverVersion() string { return buildinfo.Version() }
 
 // newAtendimento builds the MCP server for the atendimento (customer
 // service) profile: the tool surface reachable via POST /mcp.
 func newAtendimento() *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{
 		Name:    atendimentoServerName,
-		Version: serverVersion,
+		Version: serverVersion(),
 	}, &mcp.ServerOptions{
 		Instructions: "Thin, stateless proxy over the Feegow Clinic ERP API, " +
-			"atendimento (customer service) profile. Every call requires the " +
-			"caller to forward the clinic's Feegow token as " +
-			"\"Authorization: Bearer <token>\"; this server performs no " +
-			"authentication of its own and stores no tokens.",
+			"atendimento (customer service) profile. Every call is made with " +
+			"the clinic's own Feegow token, supplied by whoever runs this " +
+			"server; this server performs no authentication of its own and " +
+			"stores no tokens.",
 	})
 	registerAtendimentoTools(s, feegow.NewFromEnv())
 	return s
@@ -53,14 +61,14 @@ func newAtendimento() *mcp.Server {
 func newAdmin() *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{
 		Name:    adminServerName,
-		Version: serverVersion,
+		Version: serverVersion(),
 	}, &mcp.ServerOptions{
 		Instructions: "Thin, stateless proxy over the Feegow Clinic ERP API, " +
 			"admin profile (superset of the atendimento profile, including " +
-			"financial, inventory and write operations). Every call requires " +
-			"the caller to forward the clinic's Feegow admin token as " +
-			"\"Authorization: Bearer <token>\"; this server performs no " +
-			"authentication of its own and stores no tokens.",
+			"financial, inventory and write operations). Every call is made " +
+			"with the clinic's own Feegow admin token, supplied by whoever " +
+			"runs this server; this server performs no authentication of its " +
+			"own and stores no tokens.",
 	})
 	registerAdminTools(s, feegow.NewFromEnv())
 	return s
@@ -73,7 +81,7 @@ func newAdmin() *mcp.Server {
 func newAtendimentoWithClient(client *feegow.Client) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{
 		Name:    atendimentoServerName,
-		Version: serverVersion,
+		Version: serverVersion(),
 	}, nil)
 	registerAtendimentoTools(s, client)
 	return s

@@ -19,7 +19,7 @@ import (
 // fail-closed auth middleware, and returns a connected client session.
 func connectAdmin(t *testing.T, client *feegow.Client, bearerToken string) (*mcp.ClientSession, context.Context) {
 	t.Helper()
-	s := mcp.NewServer(&mcp.Implementation{Name: adminServerName, Version: serverVersion}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: adminServerName, Version: serverVersion()}, nil)
 	registerAdminTools(s, client)
 	srv := httptest.NewServer(newStreamableHandler(s))
 	t.Cleanup(srv.Close)
