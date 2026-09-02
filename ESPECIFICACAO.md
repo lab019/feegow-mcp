@@ -103,10 +103,10 @@ já no `tools/list` — um agente de atendimento que enxerga `remover_pagamento`
 na lista pode chamá-la, e a única defesa robusta é a tool não existir naquela
 superfície.
 
-| Registro | Rota | Auth | Segredo | Toolset |
-| --- | --- | --- | --- | --- |
-| `feegow` | `POST /mcp` | `byok:feegow` | `mcp/feegow` | atendimento (35 endpoints) |
-| `feegow-admin` | `POST /mcp/admin` | `byok:feegow_admin` | `mcp/feegow_admin` | superset (85 endpoints) |
+| Registro | Rota | Auth | Segredo | `allow_anonymous` | Toolset |
+| --- | --- | --- | --- | --- | --- |
+| `feegow` | `POST /mcp` | `byok:feegow` | `mcp/feegow` | `true` | atendimento (35 endpoints) |
+| `feegow-admin` | `POST /mcp/admin` | `byok:feegow_admin` | `mcp/feegow_admin` | `false` | superset (85 endpoints) |
 
 ### O gate do admin é dado do tenant, nunca configuração
 
@@ -121,8 +121,43 @@ Feegow com esse poder — decisão do cliente, no ERP dele.
 
 Complementos, todos também fora do env:
 
-- `allow_anonymous: false` nos dois registros — sessão anônima (voz, widget
-  público) não alcança nenhum dos perfis.
+- `allow_anonymous` **difere** entre os dois registros, e é o único lugar onde
+  os perfis divergem em política: `true` no atendimento, `false` no admin.
+
+  No atendimento tem que ser `true`. O canal é PÚBLICO por decisão de produto —
+  quem fala é o paciente, por voz ou widget, sem login — e é justamente por isso
+  que esse perfil trabalha com identidade **declarada**: dois fatos que precisam
+  bater, CPF+data de nascimento ou telefone+nome completo (o contrato está no
+  doc comment de `IdentidadeArgs`, em `internal/tools/paciente.go`), mais erro
+  uniforme e retorno mínimo. Com `false` esse desenho inteiro vira peso morto: o
+  dispatcher do runtime barra a tool **antes** de resolver o `byok`, e o canal
+  público morre na primeira chamada.
+
+  O gate virou tri-state na LIC-1068: o runtime normaliza `allow_anonymous` em
+  `anonymous_mode` (`false`→`never`, `true`→`always`, `"read_only"`→
+  `read_only`) e, para `ctx.role == "anonymous"`, `never` levanta
+  `RestrictedSkillError` de saída. Para o booleano `false` o efeito é o mesmo de
+  antes — o que muda é que existe hoje um meio-termo, `read_only`, que este
+  registro não usa.
+
+  Sessão anônima **tem** `org_id`, então o `byok:feegow` resolve o token daquela
+  clínica normalmente. Ele chega em `app_metadata.org_id`: no caminho anônimo de
+  voz/widget quem cunha o token é o `agent-gateway`, espelhando o formato de
+  claims do Supabase que o runtime lê (`mint_service_jwt`), e a extração no
+  runtime não tem caso especial para anônimo. Uma versão anterior desta seção
+  afirmava o contrário — que anônimo não teria org, logo não teria segredo a
+  resolver — e concluía `false` nos dois; era falso, e foi o que produziu o
+  valor errado aqui.
+
+  O compose da `agent-operation` carregou o mesmo erro e já foi corrigido: ele
+  nasceu com `false` no atendimento (`243f943`) e passou para `true` no mesmo
+  dia (`6673ad2`, "atendimento aceita sessão anônima; admin não"). Esta spec é
+  que ficou para trás desde então.
+
+  No admin continua `false`, e aí sim por segurança: são as tools de
+  financeiro, estoque, laudos e a remoção irreversível de fatura e pagamento. A
+  ausência do segredo `feegow_admin` já é barreira real, mas não é a única que
+  se quer ali.
 - Qual specialist carrega qual server é `tools=["feegow"]` vs
   `tools=["feegow-admin"]` no AgentSpec, que o próprio tenant gerencia.
 
