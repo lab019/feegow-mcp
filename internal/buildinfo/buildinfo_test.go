@@ -23,18 +23,13 @@ func TestVersion_StampWins(t *testing.T) {
 // a plain local build takes.
 func TestVersion_FallsBackToDev(t *testing.T) {
 	withVersion(t, "")
-	got := Version()
-	if got == "" {
-		t.Fatal("Version() returned an empty string; it must always name something")
-	}
-	if got == "(devel)" {
-		t.Fatal(`Version() leaked the toolchain's "(devel)" placeholder`)
-	}
-	if got != "dev" {
-		// Not a failure in itself: a test binary built from a tagged
-		// module version would legitimately report that tag. Say so
-		// rather than asserting an environment-dependent literal.
-		t.Logf("Version() = %q (build info carried a module version)", got)
+	// A `go test` binary is never built from a tagged module version —
+	// the toolchain records "(devel)" or nothing — so this is a hard
+	// assertion, not an environment-dependent one. Asserting the literal
+	// is the point: an earlier version of this test only logged when the
+	// value differed, so renaming the fallback broke nothing.
+	if got := Version(); got != "dev" {
+		t.Fatalf("Version() = %q with no stamp, want %q", got, "dev")
 	}
 }
 

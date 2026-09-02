@@ -80,8 +80,8 @@ func TestRunSingleSession_FailsClosedOnEmptyToken(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error for an empty token, got nil")
 	}
-	if !strings.Contains(err.Error(), "FEEGOW_TOKEN") {
-		t.Fatalf("error should tell the operator which variable is missing, got: %v", err)
+	if !strings.Contains(err.Error(), "token") {
+		t.Fatalf("error should say a token is missing, got: %v", err)
 	}
 }
 
@@ -125,8 +125,21 @@ func TestRunStdio_ProfilesExposeTheRightSurface(t *testing.T) {
 		return names
 	}
 
-	atendimento := listTools(t, newAtendimento())
-	admin := listTools(t, newAdmin())
+	// Goes through serverForProfile — the mapping the --profile flag
+	// actually performs — instead of calling newAtendimento()/newAdmin()
+	// directly. Driving the constructors directly is what let an earlier
+	// version of this test pass while the switch in RunStdio was free to
+	// be backwards.
+	serverFor := func(t *testing.T, p Profile) *mcp.Server {
+		t.Helper()
+		s, err := serverForProfile(p)
+		if err != nil {
+			t.Fatalf("serverForProfile(%q): %v", p, err)
+		}
+		return s
+	}
+	atendimento := listTools(t, serverFor(t, ProfileAtendimento))
+	admin := listTools(t, serverFor(t, ProfileAdmin))
 
 	if len(atendimento) == 0 {
 		t.Fatal("atendimento profile exposes no tools")
@@ -180,5 +193,64 @@ func TestParseProfile(t *testing.T) {
 		if !tc.ok && err == nil {
 			t.Errorf("ParseProfile(%q) accepted, want error", tc.in)
 		}
+	}
+}
+
+// TestServerForProfile_MappingIsNotBackwards is the direct guard on the
+// one thing --profile does. It pins each profile to a tool that exists on
+// ONLY that surface, so swapping the two arms of the switch fails here
+// instead of silently handing a patient-facing agent the irreversible
+// financial removals.
+func TestServerForProfile_MappingIsNotBackwards(t *testing.T) {
+	adminOnly := "remover_registro_financeiro"
+
+	atendimento := listToolsOf(t, ProfileAtendimento)
+	if atendimento[adminOnly] {
+		t.Fatalf("--profile=atendimento exposes %q: the profile switch is backwards", adminOnly)
+	}
+	if !atendimento["identificar_paciente"] {
+		t.Error(`--profile=atendimento is missing "identificar_paciente"`)
+	}
+
+	admin := listToolsOf(t, ProfileAdmin)
+	if !admin[adminOnly] {
+		t.Fatalf("--profile=admin is missing %q: the profile switch is backwards", adminOnly)
+	}
+	if len(admin) <= len(atendimento) {
+		t.Fatalf("--profile=admin has %d tools, atendimento %d: admin must be the superset",
+			len(admin), len(atendimento))
+	}
+}
+
+// listToolsOf resolves a profile the way RunStdio does and returns the
+// names on that surface.
+func listToolsOf(t *testing.T, p Profile) map[string]bool {
+	t.Helper()
+	server, err := serverForProfile(p)
+	if err != nil {
+		t.Fatalf("serverForProfile(%q): %v", p, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	clientT, done := runOverMemory(t, ctx, server, "tok")
+	session := connectClient(t, ctx, clientT)
+	res, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	names := make(map[string]bool, len(res.Tools))
+	for _, tool := range res.Tools {
+		names[tool.Name] = true
+	}
+	session.Close()
+	waitRun(t, done)
+	return names
+}
+
+// TestServerForProfile_RejectsUnknown keeps the default arm fail-closed:
+// an unrecognised profile must never quietly resolve to a toolset.
+func TestServerForProfile_RejectsUnknown(t *testing.T) {
+	if s, err := serverForProfile(Profile("gerente")); err == nil || s != nil {
+		t.Fatalf("serverForProfile(\"gerente\") = %v, %v; want nil, error", s, err)
 	}
 }

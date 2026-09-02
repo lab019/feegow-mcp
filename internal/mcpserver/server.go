@@ -42,10 +42,10 @@ func newAtendimento() *mcp.Server {
 		Version: serverVersion(),
 	}, &mcp.ServerOptions{
 		Instructions: "Thin, stateless proxy over the Feegow Clinic ERP API, " +
-			"atendimento (customer service) profile. Every call requires the " +
-			"caller to forward the clinic's Feegow token as " +
-			"\"Authorization: Bearer <token>\"; this server performs no " +
-			"authentication of its own and stores no tokens.",
+			"atendimento (customer service) profile. Every call is made with " +
+			"the clinic's own Feegow token, supplied by whoever runs this " +
+			"server; this server performs no authentication of its own and " +
+			"stores no tokens.",
 	})
 	registerAtendimentoTools(s, feegow.NewFromEnv())
 	return s
@@ -65,10 +65,10 @@ func newAdmin() *mcp.Server {
 	}, &mcp.ServerOptions{
 		Instructions: "Thin, stateless proxy over the Feegow Clinic ERP API, " +
 			"admin profile (superset of the atendimento profile, including " +
-			"financial, inventory and write operations). Every call requires " +
-			"the caller to forward the clinic's Feegow admin token as " +
-			"\"Authorization: Bearer <token>\"; this server performs no " +
-			"authentication of its own and stores no tokens.",
+			"financial, inventory and write operations). Every call is made " +
+			"with the clinic's own Feegow admin token, supplied by whoever " +
+			"runs this server; this server performs no authentication of its " +
+			"own and stores no tokens.",
 	})
 	registerAdminTools(s, feegow.NewFromEnv())
 	return s

@@ -141,10 +141,26 @@ func main() {
 		return
 	}
 
+	// --profile só significa algo no transporte de sessão única: no HTTP
+	// cada perfil é uma rota, servida simultaneamente. Aceitar a flag em
+	// silêncio faria `feegow-mcp --profile=admin` subir um servidor HTTP
+	// com AS DUAS rotas, sem nada indicando que a intenção do operador foi
+	// descartada.
+	profileSet := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "profile" {
+			profileSet = true
+		}
+	})
+
 	var err error
 	if *stdio {
 		err = runStdio(*profile)
 	} else {
+		if profileSet {
+			log.Fatalf("feegow-mcp: --profile só vale com --stdio; sem ele os dois perfis " +
+				"são servidos como rotas (POST /mcp e POST /mcp/admin)")
+		}
 		err = runHTTP()
 	}
 	if err != nil {

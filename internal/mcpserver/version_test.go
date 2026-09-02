@@ -74,9 +74,6 @@ func TestHandshakeVersion_NoHardCodedLiteral(t *testing.T) {
 		t.Fatalf("serverVersion() = %q but the build reports %q: the handshake must not carry its own version literal",
 			serverVersion(), buildinfo.Version())
 	}
-	if serverVersion() == "0.1.0" && buildinfo.Version() != "0.1.0" {
-		t.Fatal(`serverVersion() is back to the hard-coded "0.1.0"`)
-	}
 }
 
 // TestBothProfilesReportTheSameVersion: the two profiles are one binary, so

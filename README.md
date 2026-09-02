@@ -79,9 +79,23 @@ personal login. The ERP's own audit trail then distinguishes what the agent
 did from what the receptionist did, and turning the integration off does not
 mean disabling a person.
 
-The admin profile is not a setting here: it is simply what a token with
-those ERP permissions can reach. A token without financial permissions gets
-errors from Feegow on the financial tools, whichever profile it is on.
+### The admin profile is only as guarded as your token
+
+Be deliberate about this one. Over stdio, `--profile admin` is the **only**
+gate: anyone who can start the process with that flag reaches the whole admin
+toolset, including `remover_registro_financeiro`, which deletes invoices and
+payments **permanently**. There is no second check. (The hosted HTTP
+deployment does have one — a separately stored admin secret, see
+[Appendix](#appendix-the-lab019-platform-deployment) — and stdio has no
+equivalent.)
+
+Feegow itself is the backstop: a token whose ERP user lacks financial
+permissions gets errors from Feegow on those tools, whichever profile it is
+on. But note that the master user this section tells you to use has full
+permissions by construction, so that backstop does nothing for it. If you
+want the ceiling enforced rather than trusted, issue the token from an ERP
+user that only has the permissions you intend to expose, and run
+`--profile atendimento` unless you specifically need the admin surface.
 
 ## Install
 
@@ -91,6 +105,9 @@ go install github.com/lab019/feegow-mcp@latest
 
 Or build from source with `go build .` (Go 1.24+). A container image is
 published to `ghcr.io/lab019/feegow-mcp`.
+
+> While this repository is private, `go install` and `docker pull` only work
+> for accounts that can already read it. Clone and `go build .` otherwise.
 
 ## Run it locally (stdio)
 
@@ -263,12 +280,13 @@ With no `FEEGOW_CONTRACT_TOKEN`, every test in it skips.
 
 | | |
 | --- | --- |
-| `main.go`, `version.go` | process wiring: flags, both transports, graceful shutdown |
+| `main.go` | process wiring: flags, both transports, graceful shutdown |
 | `internal/mcpserver` | the only package that touches the MCP SDK: the two profiles, tool registration, the HTTP and stdio entry points |
 | `internal/tools` | pure tool logic and the business-rule guards |
 | `internal/feegow` | the normalization layer: multi-host client + `Registry` |
 | `internal/auth` | bearer extraction, fail-closed middleware, context plumbing, JWT payload decode |
 | `internal/loglevel` | makes `LOG_LEVEL` control something real |
+| `internal/buildinfo` | the one version string the binary reports (log, `--version`, MCP handshake) |
 | `docs/feegow-api.md` | generated from `Registry` |
 | `ESPECIFICACAO.md` | the full design, in Portuguese |
 

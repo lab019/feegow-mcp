@@ -56,16 +56,28 @@ func ParseProfile(s string) (Profile, error) {
 // otherwise answer tools/list happily and only fail on the first tool call,
 // with a less readable error.
 func RunStdio(ctx context.Context, profile Profile, token string) error {
-	var server *mcp.Server
-	switch profile {
-	case ProfileAtendimento:
-		server = newAtendimento()
-	case ProfileAdmin:
-		server = newAdmin()
-	default:
-		return fmt.Errorf("perfil desconhecido %q", profile)
+	server, err := serverForProfile(profile)
+	if err != nil {
+		return err
 	}
 	return runSingleSession(ctx, server, token, &mcp.StdioTransport{})
+}
+
+// serverForProfile maps a Profile to the MCP server carrying that
+// profile's toolset. Split out of RunStdio, rather than inlined as a
+// switch there, so it is reachable from a test without a real stdio
+// transport: this mapping is the entire job of the --profile flag, and
+// getting it backwards would hand a patient-facing agent the admin
+// toolset — including the irreversible financial removals — while every
+// test that drives newAtendimento()/newAdmin() directly stayed green.
+func serverForProfile(profile Profile) (*mcp.Server, error) {
+	switch profile {
+	case ProfileAtendimento:
+		return newAtendimento(), nil
+	case ProfileAdmin:
+		return newAdmin(), nil
+	}
+	return nil, fmt.Errorf("perfil desconhecido %q", profile)
 }
 
 // runSingleSession is RunStdio with the server and transport injected, so
@@ -73,7 +85,12 @@ func RunStdio(ctx context.Context, profile Profile, token string) error {
 // instead of the real stdio pair and the real tool surface.
 func runSingleSession(ctx context.Context, server *mcp.Server, token string, t mcp.Transport) error {
 	if token == "" {
-		return errors.New("token da clínica ausente: a sessão stdio não abre sem FEEGOW_TOKEN")
+		// Deliberadamente sem citar FEEGOW_TOKEN: quem lê o ambiente é o
+		// main, e é ele que dá a mensagem acionável. Este guarda existe
+		// para que nenhum chamador do pacote abra uma sessão sem token —
+		// nomear uma variável que este pacote nunca lê acoplaria a
+		// biblioteca a um detalhe do binário.
+		return errors.New("token da clínica ausente: a sessão não abre sem token")
 	}
 	return server.Run(auth.WithToken(ctx, token), t)
 }
