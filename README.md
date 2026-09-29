@@ -103,7 +103,7 @@ user that only has the permissions you intend to expose, and run
 go install github.com/lab019/feegow-mcp@latest
 ```
 
-Or build from source with `go build .` (Go 1.24+). A container image is
+Or build from source with `go build .` (Go 1.25+). A container image is
 published to `ghcr.io/lab019/feegow-mcp`.
 
 > While this repository is private, `go install` and `docker pull` only work
