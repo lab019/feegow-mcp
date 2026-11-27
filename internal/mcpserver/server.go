@@ -18,6 +18,7 @@ import (
 
 	"github.com/lab019/feegow-mcp/internal/auth"
 	"github.com/lab019/feegow-mcp/internal/buildinfo"
+	"github.com/lab019/feegow-mcp/internal/customerlog"
 	"github.com/lab019/feegow-mcp/internal/feegow"
 )
 
@@ -155,7 +156,9 @@ func newStreamableHandler(server *mcp.Server) http.Handler {
 	}, &mcp.StreamableHTTPOptions{
 		Stateless: true,
 	})
-	return auth.Middleware(h)
+	// The customer line is the HTTP path's only: stdio carries JSON-RPC on stdout, which a log line would corrupt.
+	server.AddReceivingMiddleware(customerlog.ReceivingMiddleware)
+	return customerlog.Middleware(auth.Middleware(h))
 }
 
 // Handler returns the /mcp HTTP handler for the atendimento profile: the
